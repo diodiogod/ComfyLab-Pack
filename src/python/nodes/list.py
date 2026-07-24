@@ -7,6 +7,7 @@ import folder_paths  # type: ignore
 from comfy.samplers import KSampler  # type: ignore
 
 from ..collection.register_nodes import register_node
+from ..shared.utils import ANY_TYPE
 
 
 def convert_value(value: str, output_type: str):
@@ -295,6 +296,67 @@ class ListMerge:
             output += l
 
         return (output, len(output))
+
+
+@register_node('List: Cartesian Product', 'list')
+class ListCartesianProduct:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            'required': {
+                'first_list': (
+                    'LIST',
+                    {'tooltip': 'first value in each combination, such as prompts'},
+                ),
+                'second_list': (
+                    'LIST',
+                    {'tooltip': 'second value in each combination, such as LoRA weights'},
+                ),
+            }
+        }
+
+    FUNCTION = 'run'
+    RETURN_TYPES = ('LIST', 'INT')
+    RETURN_NAMES = ('combinations', 'count')
+    OUTPUT_TOOLTIPS = (
+        'every first-list value combined with every second-list value',
+        TOOLTIP_OUTPUT_COUNT,
+    )
+    DESCRIPTION = 'Combine every value from the first list with every value from the second list. Useful for making prompt and LoRA-weight columns in an XY plot.'
+
+    def run(self, first_list, second_list):
+        combinations = [
+            (first, second) for first in first_list for second in second_list
+        ]
+        return (combinations, len(combinations))
+
+
+@register_node('Pair: Split', 'list')
+class PairSplit:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            'required': {
+                'pair': (
+                    ANY_TYPE,
+                    {'tooltip': 'current combination from XY Plot: Queue'},
+                ),
+            }
+        }
+
+    FUNCTION = 'run'
+    RETURN_TYPES = (ANY_TYPE, ANY_TYPE)
+    RETURN_NAMES = ('first', 'second')
+    OUTPUT_TOOLTIPS = (
+        'first value, such as the prompt',
+        'second value, such as the LoRA weight',
+    )
+    DESCRIPTION = 'Split the current Cartesian-product combination into its two values.'
+
+    def run(self, pair):
+        if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+            raise ValueError('Pair: Split expects a two-value Cartesian-product item')
+        return tuple(pair)
 
 
 @register_node('List: Limit', 'list')
