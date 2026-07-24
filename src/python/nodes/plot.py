@@ -6,6 +6,7 @@ from math import ceil
 import hashlib
 import json
 import os
+import re
 import shutil
 import time
 
@@ -322,6 +323,16 @@ def _plot_data_from_dict(data):
     )
 
 
+def _xy_cell_coords(cell):
+    match = re.fullmatch(r'([A-Za-z]+)([1-9][0-9]*)', cell.strip())
+    if match is None:
+        raise ValueError("XY Plot cell must look like 'A1', 'B3', or 'AA12'")
+    col = 0
+    for char in match.group(1).upper():
+        col = col * 26 + ord(char) - ord('A') + 1
+    return (col - 1, int(match.group(2)) - 1)
+
+
 @register_node('XY Plot: Queue', 'plot')
 class XYPlotQueue:
     def __init__(self):
@@ -587,6 +598,84 @@ class XYPlotImageCache:
             raise RuntimeError('XY Plot image cache could not load or generate an image')
         cache.remove()
         cache.save(image, max_cache_mb, xy_plot_data)
+        return (image,)
+
+
+@register_node('XY Plot: Select Cell', 'plot')
+class XYPlotSelectCell:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            'required': {
+                'xy_plot_data': ('XY_PLOT_DATA', {'tooltip': TOOLTIP_XY_PLOT_DATA}),
+                'image': ('IMAGE', {'lazy': True}),
+                'cell': (
+                    'STRING',
+                    {
+                        'default': 'A1',
+                        'tooltip': "Excel-style visual grid position, such as 'A1' or 'C3'",
+                    },
+                ),
+                'direction': (
+                    'BOOLEAN',
+                    {
+                        'default': True,
+                        'label_on': 'dim1 as rows',
+                        'label_off': 'dim1 as cols',
+                        'tooltip': 'must match the direction selected on XY Plot: Render',
+                    },
+                ),
+            },
+        }
+
+    FUNCTION = 'run'
+    RETURN_TYPES = ('IMAGE',)
+    RETURN_NAMES = ('selected_image',)
+    OUTPUT_TOOLTIPS = ('image at the selected visual XY plot cell',)
+    DESCRIPTION = "Select one XY plot image using an Excel-style cell such as A1 or C3. Connect the output to Preview Image or Save Image."
+
+    def _matches(self, xy_plot_data, cell, direction):
+        col, row = _xy_cell_coords(cell)
+        max_cols = xy_plot_data.dim2.length if direction else xy_plot_data.dim1.length
+        max_rows = xy_plot_data.dim1.length if direction else xy_plot_data.dim2.length
+        if col >= max_cols or row >= max_rows:
+            raise ValueError(
+                f"XY Plot cell {cell.upper()} is outside the {max_cols}-column by {max_rows}-row plot"
+            )
+        dim1_index, dim2_index = (row, col) if direction else (col, row)
+        return (
+            xy_plot_data.dim1.index == dim1_index
+            and xy_plot_data.dim2.index == dim2_index
+        )
+
+    def check_lazy_status(
+        self, xy_plot_data, cell, direction, image=None
+    ):
+        if xy_plot_data.cached_cells is not None:
+            return []
+        if self._matches(xy_plot_data, cell, direction) and image is None:
+            return ['image']
+        return []
+
+    def run(
+        self, xy_plot_data, cell, direction, image=None
+    ):
+        if xy_plot_data.cached_cells is not None:
+            for cached_cell in xy_plot_data.cached_cells:
+                cell_data = _plot_data_from_dict(cached_cell['plot_data'])
+                if self._matches(cell_data, cell, direction):
+                    selected = _XYPlotImageCache(
+                        key=cached_cell['cache_key']
+                    ).load()
+                    if selected is None:
+                        raise RuntimeError(
+                            'The selected cached XY Plot image is missing; run the plot again to rebuild it'
+                        )
+                    return (selected,)
+            raise RuntimeError(f'XY Plot cell {cell.upper()} was not found in cache')
+
+        if not self._matches(xy_plot_data, cell, direction):
+            return (ExecutionBlocker(None),)
         return (image,)
 
 
