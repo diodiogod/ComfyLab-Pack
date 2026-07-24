@@ -35,17 +35,24 @@ class Grid:
         self.dims = (len(col_headers), len(row_headers))
         cols, rows = self.dims
         self.max_cell_size = self._calc_max_cell_size(image_matrix)
+        self.col_group_starts = (
+            [start for _, start, _ in col_group_headers[1:]]
+            if col_group_headers
+            else []
+        )
 
         # build the grid image
         grid_size = (
-            self.max_cell_size[0] * cols + (cols - 1) * self.config_grid.gap,
+            self.max_cell_size[0] * cols
+            + (cols - 1) * self.config_grid.gap
+            + len(self.col_group_starts) * self.config_grid.group_gap,
             self.max_cell_size[1] * rows + (rows - 1) * self.config_grid.gap,
         )
         grid_image = self._create_image(grid_size, self.config_grid.background_color)
 
         for r, row in enumerate(image_matrix):
             for c, image in enumerate(row):
-                x = c * (self.max_cell_size[0] + self.config_grid.gap) + int(
+                x = self._column_x(c) + int(
                     (self.max_cell_size[0] - image.size[0]) / 2
                 )
                 y = r * (self.max_cell_size[1] + self.config_grid.gap) + int(
@@ -60,6 +67,13 @@ class Grid:
         grid_image = self._add_page_hf(grid_image, plot_vars)
 
         return grid_image
+
+    def _column_x(self, col: int) -> int:
+        group_offset = (
+            sum(start <= col for start in self.col_group_starts)
+            * self.config_grid.group_gap
+        )
+        return col * (self.max_cell_size[0] + self.config_grid.gap) + group_offset
 
     def _calc_max_cell_size(
         self, image_matrix: list[list[Image.Image]]
@@ -138,7 +152,7 @@ class Grid:
                 )
                 pos_x = (
                     left_margin
-                    + start * (self.config_grid.gap + self.max_cell_size[0])
+                    + self._column_x(start)
                     + group_width / 2
                 )
                 self._draw_header(
@@ -151,7 +165,7 @@ class Grid:
         for col, header in enumerate(self.headers[0]):
             pos_x = (
                 left_margin
-                + col * (self.config_grid.gap + self.max_cell_size[0])
+                + self._column_x(col)
                 + self.max_cell_size[0] / 2
             )
             pos_y = group_margin + (top_margin - group_margin) / 2

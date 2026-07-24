@@ -25,6 +25,7 @@ class XYPlotQueueData:
 @dataclass
 class PlotConfigGridData:
     gap: int = 20
+    group_gap: int = 0
     background_color: str = '#b9b9b9'
     font: str = 'Roboto-Regular.ttf'
     font_size: int = 50

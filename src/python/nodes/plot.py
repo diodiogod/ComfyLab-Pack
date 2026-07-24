@@ -813,6 +813,14 @@ class PlotConfigGrid:
                         'tooltip': 'if > 0, max number of characters in row headers before wrapping',
                     },
                 ),
+                'group_gap': (
+                    'INT',
+                    {
+                        'default': 0,
+                        'min': 0,
+                        'tooltip': 'extra horizontal gap between grouped DIM2 column headers',
+                    },
+                ),
             },
         }
 
@@ -833,9 +841,11 @@ class PlotConfigGrid:
         pad_row_headers: int,
         wrap_col_headers: int,
         wrap_row_headers: int,
+        group_gap: int,
     ):
         plot_config_grid = PlotConfigGridData(
             gap=gap,
+            group_gap=group_gap,
             background_color=background_color,
             font=font,
             font_size=font_size,
