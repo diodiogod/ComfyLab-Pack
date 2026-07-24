@@ -1,5 +1,7 @@
 {
   "XY Plot: Queue (lab)": "Loop through all values of dim1, optionally combined with dim2 values, and send them to outputs",
+  "XY Plot: Image Cache (lab)": "Cache each generated plot image in the ComfyUI user directory. Place this node immediately before XY Plot: Render to re-render plot styling without sampling again, including after restarting ComfyUI",
+  "XY Plot: Select Cell (lab)": "Select one XY plot image using an Excel-style cell such as A1 or C3. Connect the output to Preview Image or Save Image",
   "XY Plot: Render (lab)": "Render the generated images as grids",
   "Plot Config: Grid (lab)": "Various options to customize the grid appearance",
   "Plot Config: Header/Footer (lab)": "Various options to customize the appearance of the page header or footer",
@@ -9,6 +11,8 @@
   "List: from File (backend) (lab)": "Read a multiline text file and send its content as a list",
   "List: from Elements (lab)": "Create a list from any number of individual elements",
   "List: Merge (lab)": "Merge any number of lists into one",
+  "List: Cartesian Product (lab)": "Combine every value from the first list with every value from the second list. Useful for making prompt and LoRA-weight columns in an XY plot",
+  "Pair: Split (lab)": "Split the current Cartesian-product combination into its two values",
   "List: Limit (lab)": "Limit list to a given size",
   "List: Random Seeds (lab)": "Create a list of random seeds",
   "List: Checkpoints (lab)": "Create a list from selected checkpoint file names",
@@ -32,6 +36,5 @@
   "Save Text File (lab)": "Save text content to a file",
   "Sleep (lab)": "Delay execution for the given amount of seconds",
   "Convert to Any (lab)": "Convert any value to type Any ('*)",
-  "Resolution to Dimensions (lab)": "Split a resolution (as string, ex. '1024x1024') to dimensions, optionally multiplied by scale factor",
-  "Image: Downscale to Total Pixels (lab)": "Downscale an image to match target size in megapuxels"
+  "Resolution to Dimensions (lab)": "Split a resolution (as string, ex. '1024x1024') to dimensions, optionally multiplied by scale factor"
 }
