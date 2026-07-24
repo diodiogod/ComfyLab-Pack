@@ -16,14 +16,22 @@ class Pager:
         xy_plot_data: XYPlotQueueData,
         header_formats: tuple[str, str],
         dim1_as_rows: bool = True,
+        group_dim2_headers: bool = False,
+        dim2_group_header_format: str = '{dim2_group}',
     ):
         self.dim1_as_rows = dim1_as_rows
         self.header_formats = header_formats
+        self.group_dim2_headers = group_dim2_headers
+        self.dim2_group_header_format = dim2_group_header_format
         self.dim1 = SimpleNamespace(
             **{'length': xy_plot_data.dim1.length, 'headers': []}
         )
         self.dim2 = SimpleNamespace(
-            **{'length': xy_plot_data.dim2.length, 'headers': []}
+            **{
+                'length': xy_plot_data.dim2.length,
+                'headers': [],
+                'values': [None] * xy_plot_data.dim2.length,
+            }
         )
         # initialize the 2D list
         if dim1_as_rows:
@@ -62,6 +70,7 @@ class Pager:
             self.dim2.headers.append(
                 self.header_formats[1].format(dim2=xy_plot_data.dim2.value)
             )
+            self.dim2.values[xy_plot_data.dim2.index] = xy_plot_data.dim2.value
 
         # store the tensor as image
         x, y = self.get_coords(xy_plot_data.index)
@@ -80,11 +89,37 @@ class Pager:
     ) -> torch.Tensor:
         grid = Grid(plot_config_grid, plot_config_header, plot_config_footer)
         if self.dim1_as_rows:
+            col_group_headers = self._dim2_group_headers()
             grid_image = grid.make(
-                self.image_matrix, self.dim2.headers, self.dim1.headers, plot_vars
+                self.image_matrix,
+                self.dim2.headers,
+                self.dim1.headers,
+                plot_vars,
+                col_group_headers,
             )
         else:
             grid_image = grid.make(
                 self.image_matrix, self.dim1.headers, self.dim2.headers, plot_vars
             )
         return pillow_to_tensor(grid_image)
+
+    def _dim2_group_headers(self):
+        if not self.group_dim2_headers:
+            return None
+        if not all(
+            isinstance(value, (list, tuple)) and len(value) == 2
+            for value in self.dim2.values
+        ):
+            return None
+
+        groups = []
+        for index, value in enumerate(self.dim2.values):
+            group_value = value[0]
+            if groups and groups[-1][0] == group_value:
+                groups[-1][2] += 1
+            else:
+                label = self.dim2_group_header_format.format(
+                    dim2_group=group_value
+                )
+                groups.append([group_value, index, 1, label])
+        return [(group[3], group[1], group[2]) for group in groups]

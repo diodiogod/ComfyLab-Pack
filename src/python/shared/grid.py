@@ -28,6 +28,7 @@ class Grid:
         col_headers: list[str],
         row_headers: list[str],
         plot_vars: PlotVars,
+        col_group_headers=None,
     ) -> Image.Image:
         # keep a track to reuse later
         self.headers = (col_headers, row_headers)
@@ -53,7 +54,7 @@ class Grid:
                 grid_image.paste(image, (x, y))
 
         # add headers; if header format for dim1/dim2 is empty, they will be silently ignored
-        grid_image = self._add_headers(grid_image)
+        grid_image = self._add_headers(grid_image, col_group_headers)
 
         # add page header / footer
         grid_image = self._add_page_hf(grid_image, plot_vars)
@@ -84,18 +85,37 @@ class Grid:
             )
         return image
 
-    def _add_headers(self, grid_image: Image.Image):
+    def _add_headers(self, grid_image: Image.Image, col_group_headers=None):
         # normalize the headers, to respect the wrap configs
         self.headers = (
             self._normalize_headers(self.headers[0], self.config_grid.wrap_col_headers),
             self._normalize_headers(self.headers[1], self.config_grid.wrap_row_headers),
         )
+        if col_group_headers:
+            col_group_headers = [
+                (
+                    self._normalize_headers(
+                        [header], self.config_grid.wrap_col_headers
+                    )[0],
+                    start,
+                    span,
+                )
+                for header, start, span in col_group_headers
+            ]
 
         # load font
         font = self._load_font(self.config_grid.font, self.config_grid.font_size)
 
         # calculate height and width of headers at top and left
-        top_margin, left_margin = self._calc_headers_margins(font)
+        top_margin, left_margin = self._calc_headers_margins(
+            font, col_group_headers
+        )
+        group_margin = self._calc_header_tier_height(
+            font,
+            [header for header, _, _ in col_group_headers]
+            if col_group_headers
+            else [],
+        )
 
         # build the new image and paste the existing grid
         image = self._create_image(
@@ -110,13 +130,31 @@ class Grid:
         )
 
         # add the headers
+        if col_group_headers:
+            for header, start, span in col_group_headers:
+                group_width = (
+                    span * self.max_cell_size[0]
+                    + (span - 1) * self.config_grid.gap
+                )
+                pos_x = (
+                    left_margin
+                    + start * (self.config_grid.gap + self.max_cell_size[0])
+                    + group_width / 2
+                )
+                self._draw_header(
+                    draw,
+                    (pos_x, group_margin / 2),
+                    header,
+                    font,
+                    self.config_grid.font_color,
+                )
         for col, header in enumerate(self.headers[0]):
             pos_x = (
                 left_margin
                 + col * (self.config_grid.gap + self.max_cell_size[0])
                 + self.max_cell_size[0] / 2
             )
-            pos_y = top_margin / 2
+            pos_y = group_margin + (top_margin - group_margin) / 2
             self._draw_header(
                 draw, (pos_x, pos_y), header, font, self.config_grid.font_color
             )
@@ -154,16 +192,21 @@ class Grid:
             normalized.append(header)
         return normalized
 
-    def _calc_headers_margins(self, font: ImageFont):
-        top_margin = 0
-        for header in self.headers[0]:
-            if header == '':
-                continue
-            lines = header.split('\n')
-            top_margin = max(top_margin, math.ceil(len(lines) * font.size))
-        # add padding if there is something to display
-        if top_margin > 0:
-            top_margin = top_margin + 2 * self.config_grid.pad_col_headers
+    def _calc_header_tier_height(self, font: ImageFont, headers):
+        height = 0
+        for header in headers:
+            if header:
+                height = max(height, math.ceil(len(header.split('\n')) * font.size))
+        if height > 0:
+            height += 2 * self.config_grid.pad_col_headers
+        return height
+
+    def _calc_headers_margins(self, font: ImageFont, col_group_headers=None):
+        top_margin = self._calc_header_tier_height(font, self.headers[0])
+        if col_group_headers:
+            top_margin += self._calc_header_tier_height(
+                font, [header for header, _, _ in col_group_headers]
+            )
 
         left_margin = 0
         for header in self.headers[1]:

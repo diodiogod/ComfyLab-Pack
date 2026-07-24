@@ -609,6 +609,20 @@ class XYPlotRender:
                     'PLOT_CONFIG_HF',
                     {'tooltip': 'optional: plot configuration for the page footer'},
                 ),
+                'group_dim2_headers': (
+                    'BOOLEAN',
+                    {
+                        'default': False,
+                        'tooltip': 'group Cartesian-product DIM2 columns by their first value',
+                    },
+                ),
+                'dim2_group_header_format': (
+                    'STRING',
+                    {
+                        'default': 'Prompt: {dim2_group:.60}…',
+                        'tooltip': "group header template. Use '{dim2_group}' for the first Cartesian-product value",
+                    },
+                ),
             },
         }
 
@@ -641,13 +655,19 @@ class XYPlotRender:
         plot_config_grid=PlotConfigGridData(),
         plot_config_header=None,
         plot_config_footer=None,
+        group_dim2_headers=False,
+        dim2_group_header_format='Prompt: {dim2_group:.60}…',
     ):
         if xy_plot_data.cached_cells is not None:
             first_data = _plot_data_from_dict(
                 xy_plot_data.cached_cells[0]['plot_data']
             )
             self.pager = Pager(
-                first_data, (dim1_header_format, dim2_header_format), direction
+                first_data,
+                (dim1_header_format, dim2_header_format),
+                direction,
+                group_dim2_headers,
+                dim2_group_header_format,
             )
             for cell in xy_plot_data.cached_cells:
                 cell_data = _plot_data_from_dict(cell['plot_data'])
@@ -667,7 +687,11 @@ class XYPlotRender:
 
         if xy_plot_data.index == 0 or self.pager is None:
             self.pager = Pager(
-                xy_plot_data, (dim1_header_format, dim2_header_format), direction
+                xy_plot_data,
+                (dim1_header_format, dim2_header_format),
+                direction,
+                group_dim2_headers,
+                dim2_group_header_format,
             )
 
         # add image to pager
