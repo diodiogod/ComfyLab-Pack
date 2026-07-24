@@ -1,6 +1,12 @@
 from comfy_execution.graph import ExecutionBlocker  # type: ignore
+import folder_paths  # type: ignore
 import torch  # type: ignore
+from PIL import Image
 from math import ceil
+import hashlib
+import json
+import os
+import time
 
 from ..collection.register_nodes import register_node
 from ..shared.utils import ANY_TYPE
@@ -12,6 +18,7 @@ from ..shared.plot_data import (
     PlotVars,
 )
 from ..shared.pager import Pager
+from ..shared.utils import pillow_to_tensor
 
 # common tooltips
 TOOLTIP_XY_PLOT_DATA = (
@@ -27,6 +34,139 @@ TOOLTIP_HF_PLACEHOLDERS = (
     'the following placeholders are accepted: {current_page}, {total_pages}'
 )
 TOOLTIP_PLOT_CONFIG_GRID = 'plot configuration for the grid'
+
+
+def _canonical_prompt_node(prompt, node_id, seen=None):
+    if seen is None:
+        seen = set()
+    node_id = str(node_id)
+    if node_id in seen:
+        return ['cycle', node_id]
+    node = prompt.get(node_id)
+    if node is None:
+        return ['missing', node_id]
+
+    seen = seen | {node_id}
+
+    def canonical_input(value):
+        if (
+            isinstance(value, list)
+            and len(value) == 2
+            and str(value[0]) in prompt
+            and isinstance(value[1], int)
+        ):
+            return [
+                'link',
+                _canonical_prompt_node(prompt, value[0], seen),
+                value[1],
+            ]
+        if isinstance(value, dict):
+            return {key: canonical_input(value[key]) for key in sorted(value)}
+        if isinstance(value, (list, tuple)):
+            return [canonical_input(item) for item in value]
+        return value
+
+    inputs = dict(node.get('inputs', {}))
+    index = inputs.get('index', 0)
+    if (
+        node.get('class_type') == 'XYPlotQueue'
+        and isinstance(index, (int, float))
+        and index < 0
+    ):
+        inputs['index'] = 0
+    return [
+        node.get('class_type'),
+        {key: canonical_input(inputs[key]) for key in sorted(inputs)},
+    ]
+
+
+class _XYPlotImageCache:
+    def __init__(self, prompt, unique_id, cache_key):
+        self.root = os.path.join(folder_paths.get_temp_directory(), 'comfylab_xy_cache')
+        node = prompt.get(str(unique_id), {})
+        image_link = node.get('inputs', {}).get('image')
+        if not (
+            isinstance(image_link, list)
+            and len(image_link) == 2
+            and str(image_link[0]) in prompt
+        ):
+            self.key = None
+            return
+        signature = [_canonical_prompt_node(prompt, image_link[0]), image_link[1], cache_key]
+        encoded = json.dumps(
+            signature, sort_keys=True, separators=(',', ':'), ensure_ascii=False
+        ).encode('utf-8')
+        self.key = hashlib.sha256(encoded).hexdigest()
+
+    @property
+    def manifest_path(self):
+        return os.path.join(self.root, self.key + '.json')
+
+    def load(self):
+        if self.key is None or not os.path.isfile(self.manifest_path):
+            return None
+        try:
+            with open(self.manifest_path, 'r', encoding='utf-8') as file:
+                manifest = json.load(file)
+            frames = []
+            for index in range(manifest['frames']):
+                path = os.path.join(self.root, f'{self.key}.{index}.png')
+                with Image.open(path) as image:
+                    frames.append(pillow_to_tensor(image.convert(manifest['mode'])))
+            now = time.time()
+            os.utime(self.manifest_path, (now, now))
+            return torch.cat(frames, dim=0)
+        except (OSError, KeyError, ValueError, json.JSONDecodeError):
+            self.remove()
+            return None
+
+    def save(self, image, max_cache_mb):
+        if self.key is None:
+            return
+        os.makedirs(self.root, exist_ok=True)
+        mode = 'RGBA' if image.shape[-1] == 4 else 'RGB'
+        for index, frame in enumerate(image):
+            array = (
+                frame.detach().cpu().clamp(0, 1).mul(255).byte().numpy()
+            )
+            Image.fromarray(array, mode=mode).save(
+                os.path.join(self.root, f'{self.key}.{index}.png')
+            )
+        with open(self.manifest_path, 'w', encoding='utf-8') as file:
+            json.dump({'frames': image.shape[0], 'mode': mode}, file)
+        self.prune(max_cache_mb)
+
+    def remove(self):
+        if self.key is None or not os.path.isdir(self.root):
+            return
+        for name in os.listdir(self.root):
+            if name == self.key + '.json' or name.startswith(self.key + '.'):
+                try:
+                    os.remove(os.path.join(self.root, name))
+                except FileNotFoundError:
+                    pass
+
+    def prune(self, max_cache_mb):
+        limit = max_cache_mb * 1024 * 1024
+        manifests = []
+        total = 0
+        for name in os.listdir(self.root):
+            path = os.path.join(self.root, name)
+            if os.path.isfile(path):
+                total += os.path.getsize(path)
+            if name.endswith('.json') and name != self.key + '.json':
+                manifests.append((os.path.getmtime(path), name[:-5]))
+        for _, key in sorted(manifests):
+            if total <= limit:
+                break
+            for name in os.listdir(self.root):
+                if name == key + '.json' or name.startswith(key + '.'):
+                    path = os.path.join(self.root, name)
+                    try:
+                        total -= os.path.getsize(path)
+                        os.remove(path)
+                    except FileNotFoundError:
+                        pass
 
 
 @register_node('XY Plot: Queue', 'plot')
@@ -177,6 +317,98 @@ class XYPlotQueue:
         }
 
 
+@register_node('XY Plot: Image Cache', 'plot')
+class XYPlotImageCache:
+    def __init__(self):
+        self.cached_image = None
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            'required': {
+                'image': ('IMAGE', {'lazy': True}),
+                'cache_mode': (
+                    ['use cache', 'refresh', 'bypass'],
+                    {
+                        'default': 'use cache',
+                        'tooltip': 'use cache skips the image branch when the same generation inputs were cached',
+                    },
+                ),
+                'cache_key': (
+                    'STRING',
+                    {
+                        'default': '',
+                        'tooltip': 'optional namespace to keep similar plots in separate caches',
+                    },
+                ),
+                'max_cache_mb': (
+                    'INT',
+                    {
+                        'default': 2048,
+                        'min': 64,
+                        'max': 65536,
+                        'tooltip': 'maximum temporary disk space used by all XY plot image caches',
+                    },
+                ),
+            },
+            'hidden': {
+                'prompt': 'PROMPT',
+                'unique_id': 'UNIQUE_ID',
+            },
+        }
+
+    FUNCTION = 'run'
+    RETURN_TYPES = ('IMAGE',)
+    RETURN_NAMES = ('image',)
+    DESCRIPTION = 'Cache each generated plot image on temporary disk. Place this node immediately before XY Plot: Render to re-render plot styling without sampling again.'
+
+    def check_lazy_status(
+        self,
+        cache_mode,
+        cache_key,
+        max_cache_mb,
+        image=None,
+        prompt=None,
+        unique_id=None,
+    ):
+        self.cached_image = None
+        if image is not None or cache_mode == 'bypass':
+            return []
+        cache = _XYPlotImageCache(prompt, unique_id, cache_key)
+        if cache_mode == 'use cache':
+            self.cached_image = cache.load()
+            if self.cached_image is not None:
+                return []
+        return ['image']
+
+    def run(
+        self,
+        cache_mode,
+        cache_key,
+        max_cache_mb,
+        image=None,
+        prompt=None,
+        unique_id=None,
+    ):
+        if cache_mode == 'bypass':
+            return (image,)
+
+        cache = _XYPlotImageCache(prompt, unique_id, cache_key)
+        if cache_mode == 'use cache':
+            cached_image = self.cached_image
+            self.cached_image = None
+            if cached_image is None:
+                cached_image = cache.load()
+            if cached_image is not None:
+                return (cached_image,)
+
+        if image is None:
+            raise RuntimeError('XY Plot image cache could not load or generate an image')
+        cache.remove()
+        cache.save(image, max_cache_mb)
+        return (image,)
+
+
 @register_node('XY Plot: Render', 'plot')
 class XYPlotRender:
     def __init__(self):
@@ -251,7 +483,7 @@ class XYPlotRender:
         plot_config_header=None,
         plot_config_footer=None,
     ):
-        if xy_plot_data.index == 0:
+        if xy_plot_data.index == 0 or self.pager is None:
             self.pager = Pager(
                 xy_plot_data, (dim1_header_format, dim2_header_format), direction
             )

@@ -55,7 +55,7 @@ export function makeToggleWidget(node, name, options = {}) {
             obj[optKey] = options[optKey];
         return obj;
     }, {});
-    const widget = ComfyWidgets['BOOLEAN'](node, name, ['STRING', widgetOptions], app).widget;
+    const widget = ComfyWidgets['BOOLEAN'](node, name, ['BOOLEAN', widgetOptions], app).widget;
     if (options.label)
         widget.label = options.label;
     if (options.tooltip)

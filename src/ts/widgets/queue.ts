@@ -4,6 +4,10 @@ import type { ComfyApp } from '@comfyorg/comfyui-frontend-types'
 import { api } from '~/.mock/scripts/api.js'
 import type { InputSpec } from '~/.d.ts/comfyui-frontend-types_alt.js'
 
+const LABEL_READY = 'Ready'
+const LABEL_INTERRUPT = 'Interrupted'
+const LABEL_ERROR = 'Error detected'
+
 interface IQueueData {
 	index: number
 	total: number
@@ -47,7 +51,7 @@ export function QUEUE_STATUS(
 
 	// set initial value
 	reset()
-	widget.label = 'Ready'
+	widget.label = LABEL_READY
 
 	// handle page refresh: onConfigure is called after onNodeCreated, after applying serialized values, so we force reset here
 	const originalOnConfigure = node.onConfigure
@@ -58,7 +62,9 @@ export function QUEUE_STATUS(
 
 	const originalOnExecuted = node.onExecuted
 	node.onExecuted = function (message: unknown) {
-		originalOnExecuted?.apply(this, message)
+		if (widget.label === LABEL_ERROR) return
+
+		originalOnExecuted?.call(this, message)
 		if (isQueueMessage(message)) {
 			const data = queueMessageToData(message as IQueueMessage)
 			if (!widget.total) widget.total = data.total
@@ -84,12 +90,12 @@ export function QUEUE_STATUS(
 	// handle API interruptions and errors
 	const original_api_interrupt = api.interrupt
 	api.interrupt = async function (...args) {
-		await original_api_interrupt.apply(this, ...args)
-		widget.label = 'Interrupted'
+		await original_api_interrupt.apply(this, args)
+		widget.label = LABEL_INTERRUPT
 		reset()
 	}
 	api.addEventListener('execution_error', () => {
-		widget.label = 'Error detected'
+		widget.label = LABEL_ERROR
 		reset()
 	})
 

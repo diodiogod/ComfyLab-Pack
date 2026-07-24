@@ -114,7 +114,7 @@ export function makeToggleWidget(
 	const widget = ComfyWidgets['BOOLEAN'](
 		node,
 		name,
-		['STRING', widgetOptions],
+		['BOOLEAN', widgetOptions],
 		// @ts-expect-error: issue with #private in ComfyApp definition
 		app,
 	).widget

@@ -1,4 +1,7 @@
 import { api } from '../../../../scripts/api.js';
+const LABEL_READY = 'Ready';
+const LABEL_INTERRUPT = 'Interrupted';
+const LABEL_ERROR = 'Error detected';
 function isQueueMessage(message) {
     const msg = message;
     return (Array.isArray(msg.index) &&
@@ -23,7 +26,7 @@ export function QUEUE_STATUS(node, inputName, _inputData, app) {
         widget.total = undefined;
     };
     reset();
-    widget.label = 'Ready';
+    widget.label = LABEL_READY;
     const originalOnConfigure = node.onConfigure;
     node.onConfigure = function () {
         originalOnConfigure?.apply(this);
@@ -31,7 +34,9 @@ export function QUEUE_STATUS(node, inputName, _inputData, app) {
     };
     const originalOnExecuted = node.onExecuted;
     node.onExecuted = function (message) {
-        originalOnExecuted?.apply(this, message);
+        if (widget.label === LABEL_ERROR)
+            return;
+        originalOnExecuted?.call(this, message);
         if (isQueueMessage(message)) {
             const data = queueMessageToData(message);
             if (!widget.total)
@@ -52,12 +57,12 @@ export function QUEUE_STATUS(node, inputName, _inputData, app) {
     };
     const original_api_interrupt = api.interrupt;
     api.interrupt = async function (...args) {
-        await original_api_interrupt.apply(this, ...args);
-        widget.label = 'Interrupted';
+        await original_api_interrupt.apply(this, args);
+        widget.label = LABEL_INTERRUPT;
         reset();
     };
     api.addEventListener('execution_error', () => {
-        widget.label = 'Error detected';
+        widget.label = LABEL_ERROR;
         reset();
     });
     return widget;
