@@ -6,6 +6,7 @@ from math import ceil
 import hashlib
 import json
 import os
+import shutil
 import time
 
 from ..collection.register_nodes import register_node
@@ -106,9 +107,15 @@ def _canonical_prompt_node(prompt, node_id, seen=None, queue_index=None):
 
 class _XYPlotImageCache:
     def __init__(self, prompt=None, unique_id=None, cache_key='', queue_index=None, key=None):
-        self.root = os.path.join(folder_paths.get_temp_directory(), 'comfylab_xy_cache')
+        self.root = os.path.join(
+            folder_paths.get_user_directory(), 'comfylab', 'xy_cache'
+        )
+        self.legacy_root = os.path.join(
+            folder_paths.get_temp_directory(), 'comfylab_xy_cache'
+        )
         if key is not None:
             self.key = key
+            self._migrate_legacy_entry()
             return
         node = prompt.get(str(unique_id), {})
         image_link = node.get('inputs', {}).get('image')
@@ -128,6 +135,28 @@ class _XYPlotImageCache:
             signature, sort_keys=True, separators=(',', ':'), ensure_ascii=False
         ).encode('utf-8')
         self.key = hashlib.sha256(encoded).hexdigest()
+        self._migrate_legacy_entry()
+
+    def _migrate_legacy_entry(self):
+        if (
+            self.key is None
+            or os.path.isfile(self.manifest_path)
+            or not os.path.isdir(self.legacy_root)
+        ):
+            return
+        names = [
+            name
+            for name in os.listdir(self.legacy_root)
+            if name == self.key + '.json' or name.startswith(self.key + '.')
+        ]
+        if not names:
+            return
+        os.makedirs(self.root, exist_ok=True)
+        for name in names:
+            shutil.copy2(
+                os.path.join(self.legacy_root, name),
+                os.path.join(self.root, name),
+            )
 
     @property
     def manifest_path(self):
@@ -487,7 +516,7 @@ class XYPlotImageCache:
                         'default': 2048,
                         'min': 64,
                         'max': 65536,
-                        'tooltip': 'maximum temporary disk space used by all XY plot image caches',
+                        'tooltip': 'maximum persistent disk space used by all XY plot image caches',
                     },
                 ),
             },
@@ -508,7 +537,7 @@ class XYPlotImageCache:
     FUNCTION = 'run'
     RETURN_TYPES = ('IMAGE',)
     RETURN_NAMES = ('image',)
-    DESCRIPTION = 'Cache each generated plot image on temporary disk. Place this node immediately before XY Plot: Render to re-render plot styling without sampling again.'
+    DESCRIPTION = 'Cache each generated plot image in the ComfyUI user directory. Place this node immediately before XY Plot: Render to re-render plot styling without sampling again, including after restarting ComfyUI.'
 
     def check_lazy_status(
         self,
