@@ -36,7 +36,26 @@ TOOLTIP_HF_PLACEHOLDERS = (
 TOOLTIP_PLOT_CONFIG_GRID = 'plot configuration for the grid'
 
 
-def _canonical_prompt_node(prompt, node_id, seen=None):
+def _plot_data_to_dict(xy_plot_data):
+    return {
+        'index': xy_plot_data.index,
+        'current_page': xy_plot_data.current_page,
+        'total_pages': xy_plot_data.total_pages,
+        'complete': xy_plot_data.complete,
+        'dim1': {
+            'index': xy_plot_data.dim1.index,
+            'length': xy_plot_data.dim1.length,
+            'value': xy_plot_data.dim1.value,
+        },
+        'dim2': {
+            'index': xy_plot_data.dim2.index,
+            'length': xy_plot_data.dim2.length,
+            'value': xy_plot_data.dim2.value,
+        },
+    }
+
+
+def _canonical_prompt_node(prompt, node_id, seen=None, queue_index=None):
     if seen is None:
         seen = set()
     node_id = str(node_id)
@@ -57,7 +76,7 @@ def _canonical_prompt_node(prompt, node_id, seen=None):
         ):
             return [
                 'link',
-                _canonical_prompt_node(prompt, value[0], seen),
+                _canonical_prompt_node(prompt, value[0], seen, queue_index),
                 value[1],
             ]
         if isinstance(value, dict):
@@ -70,6 +89,11 @@ def _canonical_prompt_node(prompt, node_id, seen=None):
     index = inputs.get('index', 0)
     if (
         node.get('class_type') == 'XYPlotQueue'
+        and queue_index is not None
+    ):
+        inputs['index'] = queue_index
+    elif (
+        node.get('class_type') == 'XYPlotQueue'
         and isinstance(index, (int, float))
         and index < 0
     ):
@@ -81,8 +105,11 @@ def _canonical_prompt_node(prompt, node_id, seen=None):
 
 
 class _XYPlotImageCache:
-    def __init__(self, prompt, unique_id, cache_key):
+    def __init__(self, prompt=None, unique_id=None, cache_key='', queue_index=None, key=None):
         self.root = os.path.join(folder_paths.get_temp_directory(), 'comfylab_xy_cache')
+        if key is not None:
+            self.key = key
+            return
         node = prompt.get(str(unique_id), {})
         image_link = node.get('inputs', {}).get('image')
         if not (
@@ -92,7 +119,11 @@ class _XYPlotImageCache:
         ):
             self.key = None
             return
-        signature = [_canonical_prompt_node(prompt, image_link[0]), image_link[1], cache_key]
+        signature = [
+            _canonical_prompt_node(prompt, image_link[0], queue_index=queue_index),
+            image_link[1],
+            cache_key,
+        ]
         encoded = json.dumps(
             signature, sort_keys=True, separators=(',', ':'), ensure_ascii=False
         ).encode('utf-8')
@@ -103,11 +134,10 @@ class _XYPlotImageCache:
         return os.path.join(self.root, self.key + '.json')
 
     def load(self):
-        if self.key is None or not os.path.isfile(self.manifest_path):
+        manifest = self.load_manifest()
+        if manifest is None:
             return None
         try:
-            with open(self.manifest_path, 'r', encoding='utf-8') as file:
-                manifest = json.load(file)
             frames = []
             for index in range(manifest['frames']):
                 path = os.path.join(self.root, f'{self.key}.{index}.png')
@@ -120,7 +150,17 @@ class _XYPlotImageCache:
             self.remove()
             return None
 
-    def save(self, image, max_cache_mb):
+    def load_manifest(self):
+        if self.key is None or not os.path.isfile(self.manifest_path):
+            return None
+        try:
+            with open(self.manifest_path, 'r', encoding='utf-8') as file:
+                return json.load(file)
+        except (OSError, ValueError, json.JSONDecodeError):
+            self.remove()
+            return None
+
+    def save(self, image, max_cache_mb, xy_plot_data=None):
         if self.key is None:
             return
         os.makedirs(self.root, exist_ok=True)
@@ -132,9 +172,20 @@ class _XYPlotImageCache:
             Image.fromarray(array, mode=mode).save(
                 os.path.join(self.root, f'{self.key}.{index}.png')
             )
+        manifest = {'frames': image.shape[0], 'mode': mode}
+        if xy_plot_data is not None:
+            manifest['xy_plot_data'] = _plot_data_to_dict(xy_plot_data)
         with open(self.manifest_path, 'w', encoding='utf-8') as file:
-            json.dump({'frames': image.shape[0], 'mode': mode}, file)
+            json.dump(manifest, file)
         self.prune(max_cache_mb)
+
+    def save_plot_data(self, xy_plot_data):
+        manifest = self.load_manifest()
+        if manifest is None:
+            return
+        manifest['xy_plot_data'] = _plot_data_to_dict(xy_plot_data)
+        with open(self.manifest_path, 'w', encoding='utf-8') as file:
+            json.dump(manifest, file)
 
     def remove(self):
         if self.key is None or not os.path.isdir(self.root):
@@ -167,6 +218,79 @@ class _XYPlotImageCache:
                         os.remove(path)
                     except FileNotFoundError:
                         pass
+
+
+def _cached_plot_cells(prompt, queue_id, dim1, dim2):
+    total = len(dim1) * len(dim2)
+    for node_id, node in prompt.items():
+        if node.get('class_type') != 'XYPlotImageCache':
+            continue
+        inputs = node.get('inputs', {})
+        xy_link = inputs.get('xy_plot_data')
+        if not (
+            isinstance(xy_link, list)
+            and len(xy_link) == 2
+            and str(xy_link[0]) == str(queue_id)
+            and inputs.get('cache_mode', 'use cache') == 'use cache'
+        ):
+            continue
+
+        cells = []
+        for index in range(total):
+            cache = _XYPlotImageCache(
+                prompt,
+                node_id,
+                inputs.get('cache_key', ''),
+                queue_index=index,
+            )
+            manifest = cache.load_manifest()
+            plot_data = manifest.get('xy_plot_data') if manifest else None
+            if manifest is not None and (
+                manifest.get('frames', 0) < 1
+                or not all(
+                    os.path.isfile(
+                        os.path.join(cache.root, f"{cache.key}.{frame}.png")
+                    )
+                    for frame in range(manifest['frames'])
+                )
+            ):
+                manifest = None
+                plot_data = None
+            if manifest is not None and plot_data is None:
+                dim1_index = int(index / len(dim2))
+                dim2_index = index % len(dim2)
+                plot_data = _plot_data_to_dict(
+                    XYPlotQueueData(
+                        index,
+                        0,
+                        1,
+                        index == total - 1,
+                        DimData(dim1_index, len(dim1), dim1[dim1_index]),
+                        DimData(dim2_index, len(dim2), dim2[dim2_index]),
+                    )
+                )
+            if (
+                plot_data is None
+                or plot_data.get('total_pages') != 1
+                or plot_data.get('index') != index
+            ):
+                cells = []
+                break
+            cells.append({'cache_key': cache.key, 'plot_data': plot_data})
+        if len(cells) == total:
+            return cells
+    return None
+
+
+def _plot_data_from_dict(data):
+    return XYPlotQueueData(
+        data['index'],
+        data['current_page'],
+        data['total_pages'],
+        data['complete'],
+        DimData(**data['dim1']),
+        DimData(**data['dim2']),
+    )
 
 
 @register_node('XY Plot: Queue', 'plot')
@@ -210,6 +334,10 @@ class XYPlotQueue:
                     },
                 ),
             },
+            'hidden': {
+                'prompt': 'PROMPT',
+                'unique_id': 'UNIQUE_ID',
+            },
         }
 
     FUNCTION = 'run'
@@ -229,7 +357,10 @@ class XYPlotQueue:
         max_dim2_per_page: int,
         index: int,
         dim2: list[str] = [''],
+        prompt=None,
+        unique_id=None,
     ):
+        starting_plot = index < 0
         if index < 0:  # value has been reset (completion, interrupt, errors)
             index = 0
 
@@ -311,6 +442,15 @@ class XYPlotQueue:
             DimData(index_in_page[1], current_page_dims[1], values[1]),
         )
 
+        if starting_plot and total_pages == (1, 1):
+            cached_cells = _cached_plot_cells(prompt, unique_id, dim1, dim2)
+            if cached_cells is not None:
+                xy_plot_data.cached_cells = cached_cells
+                return {
+                    'result': (xy_plot_data, values[0], values[1]),
+                    'ui': {'index': [total - 1], 'total': [total]},
+                }
+
         return {
             'result': (xy_plot_data, values[0], values[1]),
             'ui': {'index': [index], 'total': [total]},
@@ -351,6 +491,14 @@ class XYPlotImageCache:
                     },
                 ),
             },
+            'optional': {
+                'xy_plot_data': (
+                    'XY_PLOT_DATA',
+                    {
+                        'tooltip': 'connect XY Plot: Queue here to enable instant whole-plot rendering'
+                    },
+                ),
+            },
             'hidden': {
                 'prompt': 'PROMPT',
                 'unique_id': 'UNIQUE_ID',
@@ -368,6 +516,7 @@ class XYPlotImageCache:
         cache_key,
         max_cache_mb,
         image=None,
+        xy_plot_data=None,
         prompt=None,
         unique_id=None,
     ):
@@ -387,6 +536,7 @@ class XYPlotImageCache:
         cache_key,
         max_cache_mb,
         image=None,
+        xy_plot_data=None,
         prompt=None,
         unique_id=None,
     ):
@@ -400,12 +550,14 @@ class XYPlotImageCache:
             if cached_image is None:
                 cached_image = cache.load()
             if cached_image is not None:
+                if xy_plot_data is not None:
+                    cache.save_plot_data(xy_plot_data)
                 return (cached_image,)
 
         if image is None:
             raise RuntimeError('XY Plot image cache could not load or generate an image')
         cache.remove()
-        cache.save(image, max_cache_mb)
+        cache.save(image, max_cache_mb, xy_plot_data)
         return (image,)
 
 
@@ -419,7 +571,7 @@ class XYPlotRender:
         return {
             'required': {
                 'xy_plot_data': ('XY_PLOT_DATA', {'tooltip': TOOLTIP_XY_PLOT_DATA}),
-                'image': ('IMAGE',),
+                'image': ('IMAGE', {'lazy': True}),
                 'dim1_header_format': (
                     'STRING',
                     {
@@ -472,6 +624,13 @@ class XYPlotRender:
     # Pager object, to hold each individual images and build the grid
     pager = None
 
+    def check_lazy_status(self, xy_plot_data, image=None, **kwargs):
+        if xy_plot_data.cached_cells is not None:
+            return []
+        if image is None:
+            return ['image']
+        return []
+
     def run(
         self,
         xy_plot_data: XYPlotQueueData,
@@ -483,6 +642,29 @@ class XYPlotRender:
         plot_config_header=None,
         plot_config_footer=None,
     ):
+        if xy_plot_data.cached_cells is not None:
+            first_data = _plot_data_from_dict(
+                xy_plot_data.cached_cells[0]['plot_data']
+            )
+            self.pager = Pager(
+                first_data, (dim1_header_format, dim2_header_format), direction
+            )
+            for cell in xy_plot_data.cached_cells:
+                cell_data = _plot_data_from_dict(cell['plot_data'])
+                image = _XYPlotImageCache(key=cell['cache_key']).load()
+                if image is None:
+                    raise RuntimeError(
+                        'A cached XY Plot image disappeared; run the plot again to rebuild it'
+                    )
+                self.pager.add(cell_data, image)
+            grid = self.pager.make_grid(
+                PlotVars(1, 1),
+                plot_config_grid,
+                plot_config_header,
+                plot_config_footer,
+            )
+            return (grid, image)
+
         if xy_plot_data.index == 0 or self.pager is None:
             self.pager = Pager(
                 xy_plot_data, (dim1_header_format, dim2_header_format), direction

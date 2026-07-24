@@ -19,6 +19,7 @@ class XYPlotQueueData:
     complete: bool
     dim1: DimData
     dim2: DimData
+    cached_cells: list | None = None
 
 
 @dataclass
