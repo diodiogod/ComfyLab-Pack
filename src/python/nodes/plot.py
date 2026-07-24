@@ -333,6 +333,15 @@ def _xy_cell_coords(cell):
     return (col - 1, int(match.group(2)) - 1)
 
 
+def _xy_column_label(index):
+    label = ''
+    index += 1
+    while index > 0:
+        index, remainder = divmod(index - 1, 26)
+        label = chr(ord('A') + remainder) + label
+    return label
+
+
 @register_node('XY Plot: Queue', 'plot')
 class XYPlotQueue:
     def __init__(self):
@@ -639,8 +648,14 @@ class XYPlotSelectCell:
         max_cols = xy_plot_data.dim2.length if direction else xy_plot_data.dim1.length
         max_rows = xy_plot_data.dim1.length if direction else xy_plot_data.dim2.length
         if col >= max_cols or row >= max_rows:
+            last_col = _xy_column_label(max_cols - 1)
+            requested_col = _xy_column_label(col)
+            example_col = requested_col if col < max_cols else 'A'
             raise ValueError(
-                f"XY Plot cell {cell.upper()} is outside the {max_cols}-column by {max_rows}-row plot"
+                f"XY Plot cell {cell.upper()} does not exist. This plot has {max_cols} columns and {max_rows} rows, "
+                f"so valid cells range from A1 to {last_col}{max_rows}. The number is the visual row position, "
+                f"not an epoch value. If epoch {row + 1} is the second item in your epoch list, use "
+                f"{example_col}2 instead."
             )
         dim1_index, dim2_index = (row, col) if direction else (col, row)
         return (
