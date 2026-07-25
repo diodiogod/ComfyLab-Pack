@@ -1,7 +1,23 @@
 import { api } from '../../../../scripts/api.js';
 const LABEL_READY = 'Ready';
 const LABEL_INTERRUPT = 'Interrupted';
-const LABEL_ERROR = 'Error detected';
+function formatExecutionError(event) {
+    const detail = event.detail ?? {};
+    const message = typeof detail.exception_message === 'string' && detail.exception_message.trim()
+        ? detail.exception_message.trim()
+        : 'Unknown execution error';
+    const firstLine = message.split(/\r?\n/, 1)[0];
+    const nodeType = detail.node_type ? String(detail.node_type) : 'node';
+    const nodeId = detail.node_id !== undefined ? ` #${detail.node_id}` : '';
+    const fullLabel = `Error: ${nodeType}${nodeId}: ${firstLine}`;
+    const label = fullLabel.length > 120 ? `${fullLabel.slice(0, 117)}...` : fullLabel;
+    const traceback = Array.isArray(detail.traceback) ? detail.traceback.join('') : '';
+    return {
+        detail,
+        label,
+        tooltip: traceback ? `${fullLabel}\n\n${traceback}` : fullLabel,
+    };
+}
 function isQueueMessage(message) {
     const msg = message;
     return (Array.isArray(msg.index) &&
@@ -20,7 +36,15 @@ function queueMessageToData(message) {
 export function QUEUE_STATUS(node, inputName, _inputData, app) {
     if (!app)
         throw new Error('QUEUE_STATUS: app is undefined');
-    const widget = node.addWidget('button', inputName, 0, () => { });
+    let hasError = false;
+    const widget = node.addWidget('button', inputName, 0, () => {
+        if (hasError) {
+            hasError = false;
+            widget.label = LABEL_READY;
+            widget.tooltip = undefined;
+            reset();
+        }
+    });
     const reset = () => {
         widget.value = Math.floor(Math.random() * 10e9) * -1;
         widget.total = undefined;
@@ -34,7 +58,7 @@ export function QUEUE_STATUS(node, inputName, _inputData, app) {
     };
     const originalOnExecuted = node.onExecuted;
     node.onExecuted = function (message) {
-        if (widget.label === LABEL_ERROR)
+        if (hasError)
             return;
         originalOnExecuted?.call(this, message);
         if (isQueueMessage(message)) {
@@ -61,8 +85,26 @@ export function QUEUE_STATUS(node, inputName, _inputData, app) {
         widget.label = LABEL_INTERRUPT;
         reset();
     };
-    api.addEventListener('execution_error', () => {
-        widget.label = LABEL_ERROR;
+    widget.beforeQueued = function () {
+        if (hasError) {
+            hasError = false;
+            widget.label = LABEL_READY;
+            widget.tooltip = undefined;
+            reset();
+        }
+    };
+    api.addEventListener('execution_error', (event) => {
+        const error = formatExecutionError(event);
+        hasError = true;
+        widget.label = error.label;
+        widget.tooltip = error.tooltip;
+        app.extensionManager.toast.add({
+            severity: 'error',
+            summary: 'XY Plot generation stopped',
+            detail: error.label,
+            life: 10000,
+        });
+        console.error('ComfyLab XY Plot execution error', error.detail);
         reset();
     });
     return widget;

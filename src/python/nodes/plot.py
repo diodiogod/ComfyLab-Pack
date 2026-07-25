@@ -57,7 +57,22 @@ def _plot_data_to_dict(xy_plot_data):
     }
 
 
-def _canonical_prompt_node(prompt, node_id, seen=None, queue_index=None):
+def _canonical_runtime_value(value):
+    if isinstance(value, dict):
+        return {
+            key: _canonical_runtime_value(value[key])
+            for key in sorted(value)
+        }
+    if isinstance(value, (list, tuple)):
+        return [_canonical_runtime_value(item) for item in value]
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return repr(value)
+
+
+def _canonical_prompt_node(
+    prompt, node_id, seen=None, queue_index=None, cell_values=None
+):
     if seen is None:
         seen = set()
     node_id = str(node_id)
@@ -76,9 +91,26 @@ def _canonical_prompt_node(prompt, node_id, seen=None, queue_index=None):
             and str(value[0]) in prompt
             and isinstance(value[1], int)
         ):
+            source = prompt[str(value[0])]
+            if (
+                source.get('class_type') == 'XYPlotQueue'
+                and cell_values is not None
+                and value[1] in (1, 2)
+            ):
+                return [
+                    'xy_cell_value',
+                    value[1],
+                    _canonical_runtime_value(cell_values[value[1] - 1]),
+                ]
             return [
                 'link',
-                _canonical_prompt_node(prompt, value[0], seen, queue_index),
+                _canonical_prompt_node(
+                    prompt,
+                    value[0],
+                    seen,
+                    queue_index,
+                    cell_values,
+                ),
                 value[1],
             ]
         if isinstance(value, dict):
@@ -107,7 +139,15 @@ def _canonical_prompt_node(prompt, node_id, seen=None, queue_index=None):
 
 
 class _XYPlotImageCache:
-    def __init__(self, prompt=None, unique_id=None, cache_key='', queue_index=None, key=None):
+    def __init__(
+        self,
+        prompt=None,
+        unique_id=None,
+        cache_key='',
+        queue_index=None,
+        cell_values=None,
+        key=None,
+    ):
         self.root = os.path.join(
             folder_paths.get_user_directory(), 'comfylab', 'xy_cache'
         )
@@ -128,7 +168,12 @@ class _XYPlotImageCache:
             self.key = None
             return
         signature = [
-            _canonical_prompt_node(prompt, image_link[0], queue_index=queue_index),
+            _canonical_prompt_node(
+                prompt,
+                image_link[0],
+                queue_index=queue_index,
+                cell_values=cell_values,
+            ),
             image_link[1],
             cache_key,
         ]
@@ -267,11 +312,14 @@ def _cached_plot_cells(prompt, queue_id, dim1, dim2):
 
         cells = []
         for index in range(total):
+            dim1_index = int(index / len(dim2))
+            dim2_index = index % len(dim2)
             cache = _XYPlotImageCache(
                 prompt,
                 node_id,
                 inputs.get('cache_key', ''),
                 queue_index=index,
+                cell_values=(dim1[dim1_index], dim2[dim2_index]),
             )
             manifest = cache.load_manifest()
             plot_data = manifest.get('xy_plot_data') if manifest else None
@@ -287,8 +335,6 @@ def _cached_plot_cells(prompt, queue_id, dim1, dim2):
                 manifest = None
                 plot_data = None
             if manifest is not None and plot_data is None:
-                dim1_index = int(index / len(dim2))
-                dim2_index = index % len(dim2)
                 plot_data = _plot_data_to_dict(
                     XYPlotQueueData(
                         index,
@@ -572,7 +618,14 @@ class XYPlotImageCache:
         self.cached_image = None
         if image is not None or cache_mode == 'bypass':
             return []
-        cache = _XYPlotImageCache(prompt, unique_id, cache_key)
+        cell_values = (
+            (xy_plot_data.dim1.value, xy_plot_data.dim2.value)
+            if xy_plot_data is not None
+            else None
+        )
+        cache = _XYPlotImageCache(
+            prompt, unique_id, cache_key, cell_values=cell_values
+        )
         if cache_mode == 'use cache':
             self.cached_image = cache.load()
             if self.cached_image is not None:
@@ -592,7 +645,14 @@ class XYPlotImageCache:
         if cache_mode == 'bypass':
             return (image,)
 
-        cache = _XYPlotImageCache(prompt, unique_id, cache_key)
+        cell_values = (
+            (xy_plot_data.dim1.value, xy_plot_data.dim2.value)
+            if xy_plot_data is not None
+            else None
+        )
+        cache = _XYPlotImageCache(
+            prompt, unique_id, cache_key, cell_values=cell_values
+        )
         if cache_mode == 'use cache':
             cached_image = self.cached_image
             self.cached_image = None
