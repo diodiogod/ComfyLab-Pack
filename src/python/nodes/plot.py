@@ -228,10 +228,26 @@ def _canonical_prompt_node(
         and index < 0
     ):
         inputs['index'] = 0
-    return [
-        node.get('class_type'),
-        {key: canonical_input(inputs[key]) for key in sorted(inputs)},
-    ]
+    canonical_inputs = {}
+    for key in sorted(inputs):
+        if (
+            node.get('class_type') == 'XYPlotQueue'
+            and cell_values is not None
+            and key in ('dim1', 'dim2')
+        ):
+            # A queue cell consumes one value from each dimension. Including
+            # the complete LIST node here makes changing one prompt invalidate
+            # every cell, even though the other cells do not use that prompt.
+            dimension_index = 0 if key == 'dim1' else 1
+            canonical_inputs[key] = [
+                'xy_dimension_value',
+                key,
+                _canonical_runtime_value(cell_values[dimension_index]),
+            ]
+        else:
+            canonical_inputs[key] = canonical_input(inputs[key])
+
+    return [node.get('class_type'), canonical_inputs]
 
 
 class _XYPlotImageCache:
