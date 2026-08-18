@@ -1532,7 +1532,11 @@ class XYPlotVideoRender:
                 plot_config_header,
                 plot_config_footer,
             )
-            output_frames.append(pillow_to_tensor(grid.convert('RGB')))
+            # Pager.make_grid() already returns a ComfyUI image tensor.
+            # Keep the renderer from treating it as a PIL image a second time.
+            if grid.shape[-1] == 4:
+                grid = grid[..., :3]
+            output_frames.append(grid)
 
         return torch.cat(output_frames, dim=0)
 
