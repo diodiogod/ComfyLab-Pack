@@ -167,7 +167,7 @@ def _canonical_runtime_value(value):
 
 
 def _canonical_prompt_node(
-    prompt, node_id, seen=None, queue_index=None, cell_values=None
+    prompt, node_id, seen=None, cell_values=None
 ):
     if seen is None:
         seen = set()
@@ -204,7 +204,6 @@ def _canonical_prompt_node(
                     prompt,
                     value[0],
                     seen,
-                    queue_index,
                     cell_values,
                 ),
                 value[1],
@@ -218,11 +217,6 @@ def _canonical_prompt_node(
     inputs = dict(node.get('inputs', {}))
     index = inputs.get('index', 0)
     if (
-        node.get('class_type') == 'XYPlotQueue'
-        and queue_index is not None
-    ):
-        inputs['index'] = queue_index
-    elif (
         node.get('class_type') == 'XYPlotQueue'
         and isinstance(index, (int, float))
         and index < 0
@@ -256,7 +250,6 @@ class _XYPlotImageCache:
         prompt=None,
         unique_id=None,
         cache_key='',
-        queue_index=None,
         cell_values=None,
         input_name='image',
         key=None,
@@ -284,7 +277,6 @@ class _XYPlotImageCache:
             _canonical_prompt_node(
                 prompt,
                 image_link[0],
-                queue_index=queue_index,
                 cell_values=cell_values,
             ),
             image_link[1],
@@ -505,13 +497,11 @@ def _cached_plot_cells(prompt, queue_id, dim1, dim2):
                 prompt,
                 node_id,
                 cache_key,
-                queue_index=index,
                 cell_values=(dim1[dim1_index], dim2[dim2_index]),
                 input_name=input_name,
             )
             manifest = cache.load_manifest()
-            plot_data = manifest.get('xy_plot_data') if manifest else None
-            if manifest is not None and (
+            if manifest is None or (
                 manifest.get('frames', 0) < 1
                 or not all(
                     os.path.isfile(
@@ -520,26 +510,23 @@ def _cached_plot_cells(prompt, queue_id, dim1, dim2):
                     for frame in range(manifest['frames'])
                 )
             ):
-                manifest = None
-                plot_data = None
-            if manifest is not None and plot_data is None:
-                plot_data = _plot_data_to_dict(
-                    XYPlotQueueData(
-                        index,
-                        0,
-                        1,
-                        index == total - 1,
-                        DimData(dim1_index, len(dim1), dim1[dim1_index]),
-                        DimData(dim2_index, len(dim2), dim2[dim2_index]),
-                    )
-                )
-            if (
-                plot_data is None
-                or plot_data.get('total_pages') != 1
-                or plot_data.get('index') != index
-            ):
                 cells = []
                 break
+
+            # Cell metadata is derived from the current queue, not stored in
+            # the media manifest. This permits identical videos to be shared
+            # by multiple cells without one cell overwriting another cell's
+            # row/column metadata.
+            plot_data = _plot_data_to_dict(
+                XYPlotQueueData(
+                    index,
+                    0,
+                    1,
+                    index == total - 1,
+                    DimData(dim1_index, len(dim1), dim1[dim1_index]),
+                    DimData(dim2_index, len(dim2), dim2[dim2_index]),
+                )
+            )
             cells.append({'cache_key': cache.key, 'plot_data': plot_data})
         if len(cells) == total:
             return cells
