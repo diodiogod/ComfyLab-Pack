@@ -1536,6 +1536,23 @@ class XYPlotVideoRender:
             # Keep the renderer from treating it as a PIL image a second time.
             if grid.shape[-1] == 4:
                 grid = grid[..., :3]
+            # libx264 requires even frame dimensions. The plot layout can be
+            # odd-sized when headers, gaps, or padding produce an odd total.
+            pad_height = int(grid.shape[1] % 2)
+            pad_width = int(grid.shape[2] % 2)
+            if pad_height or pad_width:
+                padded = grid.new_empty(
+                    (
+                        grid.shape[0],
+                        grid.shape[1] + pad_height,
+                        grid.shape[2] + pad_width,
+                        grid.shape[3],
+                    )
+                )
+                pad_rgb = _background_rgb(plot_config_grid.background_color)
+                padded[...] = grid.new_tensor(pad_rgb).view(1, 1, 1, 3)
+                padded[:, : grid.shape[1], : grid.shape[2], :] = grid
+                grid = padded
             output_frames.append(grid)
 
         return torch.cat(output_frames, dim=0)
