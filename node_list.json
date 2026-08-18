@@ -1,8 +1,10 @@
 {
   "XY Plot: Queue (lab)": "Loop through all values of dim1, optionally combined with dim2 values, and send them to outputs",
   "XY Plot: Image Cache (lab)": "Cache each generated plot image in the ComfyUI user directory. Place this node immediately before XY Plot: Render to re-render plot styling without sampling again, including after restarting ComfyUI",
+  "XY Plot: Video Cache (lab)": "Cache each XY cell as video frames and optional audio in the ComfyUI user directory. Accepts VIDEO or decoded IMAGE frame batches",
   "XY Plot: Select Cell (lab)": "Select one XY plot image using an Excel-style cell such as A1 or C3. Connect the output to Preview Image or Save Image",
   "XY Plot: Render (lab)": "Render the generated images as grids",
+  "XY Plot: Video Render (lab)": "Render an XY plot for every frame of a video",
   "Plot Config: Grid (lab)": "Various options to customize the grid appearance",
   "Plot Config: Header/Footer (lab)": "Various options to customize the appearance of the page header or footer",
   "XY Plot: Split Data (lab)": "Split the queue processing data into individual values",

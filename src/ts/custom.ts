@@ -50,6 +50,36 @@ const customLabels = {
 			dim2_header_format: 'dim2: header format',
 		},
 	},
+	XYPlotVideoCache: {
+		input: {
+			xy_plot_data: 'XY plot data (opt)',
+		},
+		widget: {
+			fps: 'fallback FPS',
+			cache_mode: 'cache mode',
+			cache_key: 'cache namespace',
+			max_cache_mb: 'max cache (MB)',
+		},
+	},
+	XYPlotVideoRender: {
+		input: {
+			xy_plot_data: 'XY plot data',
+			plot_config_grid: 'config: grid (opt)',
+			plot_config_header: 'config: header (opt)',
+			plot_config_footer: 'config: footer (opt)',
+		},
+		widget: {
+			dim1_header_format: 'dim1: header format',
+			dim2_header_format: 'dim2: header format',
+			audio_mode: 'audio',
+			audio_cell: 'audio cell',
+			temporal_padding: 'short video padding',
+			resolution_mode: 'cell resolution',
+			resize_mode: 'resize mode',
+			spatial_padding_color: 'aspect-ratio padding',
+			fps: 'output FPS',
+		},
+	},
 	PlotConfigGrid: {
 		widget: {
 			gap: 'gap (between cells)',

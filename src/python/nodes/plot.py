@@ -1,14 +1,17 @@
 from comfy_execution.graph import ExecutionBlocker  # type: ignore
 import folder_paths  # type: ignore
 import torch  # type: ignore
-from PIL import Image
+import numpy as np
+from PIL import Image, ImageColor
 from math import ceil
+from fractions import Fraction
 import hashlib
 import json
 import os
 import re
 import shutil
 import time
+from types import SimpleNamespace
 
 from ..collection.register_nodes import register_node
 from ..shared.utils import ANY_TYPE
@@ -36,6 +39,99 @@ TOOLTIP_HF_PLACEHOLDERS = (
     'the following placeholders are accepted: {current_page}, {total_pages}'
 )
 TOOLTIP_PLOT_CONFIG_GRID = 'plot configuration for the grid'
+_RESAMPLE_LANCZOS = getattr(getattr(Image, 'Resampling', Image), 'LANCZOS')
+
+
+def _frame_rate(value, fallback=24.0):
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        value = float(fallback)
+    return value if value > 0 else float(fallback)
+
+
+def _copy_audio(audio):
+    if not isinstance(audio, dict):
+        return audio
+    waveform = audio.get('waveform')
+    if isinstance(waveform, torch.Tensor):
+        waveform = waveform.detach().cpu()
+    return {
+        'waveform': waveform,
+        'sample_rate': int(audio.get('sample_rate', 0)),
+    }
+
+
+def _video_record(value, fps=24.0):
+    """Normalize VIDEO or IMAGE input to CPU frames plus optional audio/FPS."""
+    audio = None
+    frame_rate = fps
+    if isinstance(value, torch.Tensor):
+        frames = value
+    elif hasattr(value, 'get_components'):
+        try:
+            components = value.get_components()
+        except Exception as exc:
+            raise RuntimeError(f'Could not read the input video components: {exc}') from exc
+        frames = getattr(components, 'images', None)
+        audio = getattr(components, 'audio', None)
+        frame_rate = getattr(components, 'frame_rate', fps)
+    else:
+        raise TypeError(
+            'XY Plot: Video nodes expect a VIDEO object or an IMAGE frame batch'
+        )
+
+    if not isinstance(frames, torch.Tensor):
+        raise ValueError('The video decoder did not provide an IMAGE tensor of frames')
+    if frames.ndim == 3:
+        frames = frames.unsqueeze(0)
+    if frames.ndim != 4:
+        raise ValueError(
+            f'Video frames must have shape [frames, height, width, channels], got {tuple(frames.shape)}'
+        )
+    if frames.shape[0] < 1:
+        raise ValueError('The video contains no frames')
+    if frames.shape[-1] not in (3, 4):
+        raise ValueError(
+            f'Video frames must have 3 or 4 channels, got {frames.shape[-1]}'
+        )
+    if frames.shape[-1] == 4:
+        # ComfyUI's video encoder currently expects RGB frames. The plot is
+        # also composited onto a solid background, so dropping alpha here is
+        # preferable to producing a VIDEO object that cannot be saved.
+        frames = frames[..., :3]
+
+    return SimpleNamespace(
+        frames=frames.detach().cpu(),
+        audio=_copy_audio(audio),
+        frame_rate=_frame_rate(frame_rate, fps),
+    )
+
+
+def _video_from_record(record):
+    try:
+        from comfy_api.latest import InputImpl, Types  # type: ignore
+
+        return InputImpl.VideoFromComponents(
+            Types.VideoComponents(
+                images=record.frames,
+                audio=record.audio,
+                frame_rate=Fraction(round(record.frame_rate * 1000), 1000),
+            )
+        )
+    except ImportError as exc:
+        raise RuntimeError(
+            'This ComfyUI version does not expose the VIDEO API required by XY Plot: Video'
+        ) from exc
+
+
+def _background_rgb(value, fallback='black'):
+    value = fallback if value in (None, '', 'transparent') else value
+    try:
+        rgb = ImageColor.getrgb(value)
+    except (TypeError, ValueError):
+        rgb = ImageColor.getrgb(fallback)
+    return rgb[:3]
 
 
 def _plot_data_to_dict(xy_plot_data):
@@ -146,6 +242,7 @@ class _XYPlotImageCache:
         cache_key='',
         queue_index=None,
         cell_values=None,
+        input_name='image',
         key=None,
     ):
         self.root = os.path.join(
@@ -159,7 +256,7 @@ class _XYPlotImageCache:
             self._migrate_legacy_entry()
             return
         node = prompt.get(str(unique_id), {})
-        image_link = node.get('inputs', {}).get('image')
+        image_link = node.get('inputs', {}).get(input_name)
         if not (
             isinstance(image_link, list)
             and len(image_link) == 2
@@ -208,22 +305,70 @@ class _XYPlotImageCache:
     def manifest_path(self):
         return os.path.join(self.root, self.key + '.json')
 
+    def _load_frames(self, manifest):
+        frames = []
+        for index in range(manifest['frames']):
+            path = os.path.join(self.root, f'{self.key}.{index}.png')
+            with Image.open(path) as image:
+                frames.append(pillow_to_tensor(image.convert(manifest['mode'])))
+        return torch.cat(frames, dim=0)
+
     def load(self):
         manifest = self.load_manifest()
         if manifest is None:
             return None
         try:
-            frames = []
-            for index in range(manifest['frames']):
-                path = os.path.join(self.root, f'{self.key}.{index}.png')
-                with Image.open(path) as image:
-                    frames.append(pillow_to_tensor(image.convert(manifest['mode'])))
+            frames = self._load_frames(manifest)
             now = time.time()
             os.utime(self.manifest_path, (now, now))
-            return torch.cat(frames, dim=0)
+            return frames
         except (OSError, KeyError, ValueError, json.JSONDecodeError):
             self.remove()
             return None
+
+    def load_media(self, default_frame_rate=24.0):
+        manifest = self.load_manifest()
+        if manifest is None:
+            return None
+        try:
+            frames = self._load_frames(manifest)
+        except (OSError, KeyError, ValueError, json.JSONDecodeError):
+            self.remove()
+            return None
+
+        audio = None
+        audio_info = manifest.get('audio')
+        if isinstance(audio_info, dict):
+            audio_file = audio_info.get('file')
+            audio_path = os.path.join(self.root, audio_file) if audio_file else None
+            if audio_path and os.path.isfile(audio_path):
+                try:
+                    waveform = torch.from_numpy(
+                        np.load(audio_path, allow_pickle=False)
+                    )
+                    sample_rate = int(audio_info.get('sample_rate', 0))
+                    if sample_rate > 0:
+                        audio = {
+                            'waveform': waveform,
+                            'sample_rate': sample_rate,
+                        }
+                except (OSError, ValueError, EOFError):
+                    # A missing/corrupt audio sidecar must not invalidate the
+                    # cached video frames. The user can still render silently.
+                    audio = None
+
+        now = time.time()
+        try:
+            os.utime(self.manifest_path, (now, now))
+        except OSError:
+            pass
+        return SimpleNamespace(
+            frames=frames,
+            audio=audio,
+            frame_rate=_frame_rate(
+                manifest.get('frame_rate', default_frame_rate), default_frame_rate
+            ),
+        )
 
     def load_manifest(self):
         if self.key is None or not os.path.isfile(self.manifest_path):
@@ -235,7 +380,14 @@ class _XYPlotImageCache:
             self.remove()
             return None
 
-    def save(self, image, max_cache_mb, xy_plot_data=None):
+    def save(
+        self,
+        image,
+        max_cache_mb,
+        xy_plot_data=None,
+        frame_rate=None,
+        audio=None,
+    ):
         if self.key is None:
             return
         os.makedirs(self.root, exist_ok=True)
@@ -248,6 +400,20 @@ class _XYPlotImageCache:
                 os.path.join(self.root, f'{self.key}.{index}.png')
             )
         manifest = {'frames': image.shape[0], 'mode': mode}
+        if frame_rate is not None:
+            manifest['frame_rate'] = _frame_rate(frame_rate)
+        if isinstance(audio, dict) and isinstance(audio.get('waveform'), torch.Tensor):
+            sample_rate = int(audio.get('sample_rate', 0))
+            if sample_rate > 0:
+                audio_file = f'{self.key}.audio.npy'
+                np.save(
+                    os.path.join(self.root, audio_file),
+                    audio['waveform'].detach().cpu().numpy(),
+                )
+                manifest['audio'] = {
+                    'file': audio_file,
+                    'sample_rate': sample_rate,
+                }
         if xy_plot_data is not None:
             manifest['xy_plot_data'] = _plot_data_to_dict(xy_plot_data)
         with open(self.manifest_path, 'w', encoding='utf-8') as file:
@@ -298,8 +464,13 @@ class _XYPlotImageCache:
 def _cached_plot_cells(prompt, queue_id, dim1, dim2):
     total = len(dim1) * len(dim2)
     for node_id, node in prompt.items():
-        if node.get('class_type') != 'XYPlotImageCache':
+        cache_type = node.get('class_type')
+        if cache_type not in ('XYPlotImageCache', 'XYPlotVideoCache'):
             continue
+        input_name = 'video' if cache_type == 'XYPlotVideoCache' else 'image'
+        cache_key = inputs.get('cache_key', '')
+        if cache_type == 'XYPlotVideoCache':
+            cache_key = f"{cache_key}|fps={_frame_rate(inputs.get('fps', 24.0))}"
         inputs = node.get('inputs', {})
         xy_link = inputs.get('xy_plot_data')
         if not (
@@ -317,9 +488,10 @@ def _cached_plot_cells(prompt, queue_id, dim1, dim2):
             cache = _XYPlotImageCache(
                 prompt,
                 node_id,
-                inputs.get('cache_key', ''),
+                cache_key,
                 queue_index=index,
                 cell_values=(dim1[dim1_index], dim2[dim2_index]),
+                input_name=input_name,
             )
             manifest = cache.load_manifest()
             plot_data = manifest.get('xy_plot_data') if manifest else None
@@ -670,6 +842,163 @@ class XYPlotImageCache:
         return (image,)
 
 
+@register_node('XY Plot: Video Cache', 'plot')
+class XYPlotVideoCache:
+    def __init__(self):
+        self.cached_video = None
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            'required': {
+                'video': (
+                    ANY_TYPE,
+                    {
+                        'lazy': True,
+                        'tooltip': 'VIDEO or an IMAGE batch containing video frames',
+                    },
+                ),
+                'fps': (
+                    'FLOAT',
+                    {
+                        'default': 24.0,
+                        'min': 0.01,
+                        'max': 1000.0,
+                        'step': 0.01,
+                        'tooltip': 'FPS used when the input is an IMAGE frame batch; VIDEO inputs keep their own FPS',
+                    },
+                ),
+                'cache_mode': (
+                    ['use cache', 'refresh', 'bypass'],
+                    {
+                        'default': 'use cache',
+                        'tooltip': 'use cache skips the video branch when the same generation inputs were cached',
+                    },
+                ),
+                'cache_key': (
+                    'STRING',
+                    {
+                        'default': '',
+                        'tooltip': 'optional namespace to keep similar plots in separate caches',
+                    },
+                ),
+                'max_cache_mb': (
+                    'INT',
+                    {
+                        'default': 4096,
+                        'min': 64,
+                        'max': 65536,
+                        'tooltip': 'maximum persistent disk space used by all XY plot caches',
+                    },
+                ),
+            },
+            'optional': {
+                'xy_plot_data': (
+                    'XY_PLOT_DATA',
+                    {
+                        'tooltip': 'connect XY Plot: Queue here to enable instant whole-plot rendering'
+                    },
+                ),
+            },
+            'hidden': {
+                'prompt': 'PROMPT',
+                'unique_id': 'UNIQUE_ID',
+            },
+        }
+
+    FUNCTION = 'run'
+    RETURN_TYPES = ('VIDEO',)
+    RETURN_NAMES = ('video',)
+    DESCRIPTION = 'Cache each XY cell as video frames and optional audio in the ComfyUI user directory. Accepts VIDEO or decoded IMAGE frame batches.'
+
+    def _cache(
+        self,
+        prompt,
+        unique_id,
+        cache_key,
+        fps,
+        xy_plot_data,
+    ):
+        cell_values = (
+            (xy_plot_data.dim1.value, xy_plot_data.dim2.value)
+            if xy_plot_data is not None
+            else None
+        )
+        return _XYPlotImageCache(
+            prompt,
+            unique_id,
+            f"{cache_key}|fps={_frame_rate(fps)}",
+            cell_values=cell_values,
+            input_name='video',
+        )
+
+    def check_lazy_status(
+        self,
+        fps,
+        cache_mode,
+        cache_key,
+        max_cache_mb,
+        video=None,
+        xy_plot_data=None,
+        prompt=None,
+        unique_id=None,
+    ):
+        self.cached_video = None
+        if video is not None or cache_mode == 'bypass':
+            return []
+        cache = self._cache(prompt, unique_id, cache_key, fps, xy_plot_data)
+        if cache_mode == 'use cache':
+            cached_record = cache.load_media(fps)
+            if cached_record is not None:
+                self.cached_video = _video_from_record(cached_record)
+                return []
+        return ['video']
+
+    def run(
+        self,
+        fps,
+        cache_mode,
+        cache_key,
+        max_cache_mb,
+        video=None,
+        xy_plot_data=None,
+        prompt=None,
+        unique_id=None,
+    ):
+        if cache_mode == 'bypass':
+            if video is None:
+                raise RuntimeError('XY Plot: Video Cache received no video or frame batch')
+            return (_video_from_record(_video_record(video, fps)),)
+
+        cache = self._cache(prompt, unique_id, cache_key, fps, xy_plot_data)
+        if cache_mode == 'use cache':
+            cached_video = self.cached_video
+            self.cached_video = None
+            if cached_video is None:
+                cached_record = cache.load_media(fps)
+                if cached_record is not None:
+                    cached_video = _video_from_record(cached_record)
+            if cached_video is not None:
+                if xy_plot_data is not None:
+                    cache.save_plot_data(xy_plot_data)
+                return (cached_video,)
+
+        if video is None:
+            raise RuntimeError(
+                'XY Plot: Video Cache could not load or generate a video cell'
+            )
+        record = _video_record(video, fps)
+        cache.remove()
+        cache.save(
+            record.frames,
+            max_cache_mb,
+            xy_plot_data,
+            frame_rate=record.frame_rate,
+            audio=record.audio,
+        )
+        return (_video_from_record(record),)
+
+
 @register_node('XY Plot: Select Cell', 'plot')
 class XYPlotSelectCell:
     @classmethod
@@ -906,6 +1235,370 @@ class XYPlotRender:
                 grid,
                 image,
             )
+
+
+def _video_cell_indices(cells, cell, direction):
+    if not cells:
+        raise ValueError('The XY plot has no cells from which to select audio')
+    first_data = cells[0][0]
+    col, row = _xy_cell_coords(cell)
+    max_cols = first_data.dim2.length if direction else first_data.dim1.length
+    max_rows = first_data.dim1.length if direction else first_data.dim2.length
+    if col >= max_cols or row >= max_rows:
+        last_col = _xy_column_label(max_cols - 1)
+        raise ValueError(
+            f'Audio cell {cell.upper()} does not exist. This plot has {max_cols} columns and {max_rows} rows, '
+            f'so valid cells range from A1 to {last_col}{max_rows}'
+        )
+    dim1_index, dim2_index = (row, col) if direction else (col, row)
+    for index, (plot_data, _) in enumerate(cells):
+        if (
+            plot_data.dim1.index == dim1_index
+            and plot_data.dim2.index == dim2_index
+        ):
+            return index
+    raise ValueError(f'Audio cell {cell.upper()} was not found in the current XY plot page')
+
+
+def _video_frame_image(frame, size, resize_mode, pad_rgb):
+    target_width, target_height = size
+    image = tensor_to_pillow(frame).convert('RGB')
+    if resize_mode == 'stretch':
+        return image.resize((target_width, target_height), _RESAMPLE_LANCZOS)
+
+    scale = min(target_width / image.width, target_height / image.height)
+    resized_size = (
+        max(1, round(image.width * scale)),
+        max(1, round(image.height * scale)),
+    )
+    resized = image.resize(resized_size, _RESAMPLE_LANCZOS)
+    canvas = Image.new('RGB', (target_width, target_height), color=pad_rgb)
+    canvas.paste(
+        resized,
+        ((target_width - resized.width) // 2, (target_height - resized.height) // 2),
+    )
+    return canvas
+
+
+@register_node('XY Plot: Video Render', 'plot')
+class XYPlotVideoRender:
+    def __init__(self):
+        self.cells = None
+        self.page = None
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            'required': {
+                'xy_plot_data': ('XY_PLOT_DATA', {'tooltip': TOOLTIP_XY_PLOT_DATA}),
+                'video': (
+                    ANY_TYPE,
+                    {
+                        'lazy': True,
+                        'tooltip': 'VIDEO or an IMAGE batch containing video frames',
+                    },
+                ),
+                'dim1_header_format': (
+                    'STRING',
+                    {
+                        'default': '{dim1}',
+                        'tooltip': "template text for the dim1 header; use '{dim1}' and '\\n' for multiline text",
+                    },
+                ),
+                'dim2_header_format': (
+                    'STRING',
+                    {
+                        'default': '{dim2}',
+                        'tooltip': "template text for the dim2 header; use '{dim2}' and '\\n' for multiline text",
+                    },
+                ),
+                'direction': (
+                    'BOOLEAN',
+                    {
+                        'default': True,
+                        'label_on': 'dim1 as rows',
+                        'label_off': 'dim1 as cols',
+                        'tooltip': 'display dim1 values as rows or columns',
+                    },
+                ),
+                'audio_mode': (
+                    ['silent', 'first cell', 'first available', 'selected cell'],
+                    {
+                        'default': 'silent',
+                        'tooltip': 'keep no audio, or keep one audio track from the plot; audio tracks are never mixed',
+                    },
+                ),
+                'audio_cell': (
+                    'STRING',
+                    {
+                        'default': 'A1',
+                        'tooltip': "Excel-style cell used when audio mode is 'selected cell'",
+                    },
+                ),
+                'temporal_padding': (
+                    ['repeat last frame', 'black', 'white', 'plot background'],
+                    {
+                        'default': 'repeat last frame',
+                        'tooltip': 'how to extend videos shorter than the longest cell video',
+                    },
+                ),
+                'resolution_mode': (
+                    ['largest', 'first cell'],
+                    {
+                        'default': 'largest',
+                        'tooltip': 'choose the common cell resolution used by the plot',
+                    },
+                ),
+                'resize_mode': (
+                    ['fit and pad', 'stretch'],
+                    {
+                        'default': 'fit and pad',
+                        'tooltip': 'fit preserves aspect ratio and pads; stretch fills the cell exactly',
+                    },
+                ),
+                'spatial_padding_color': (
+                    ['plot background', 'black', 'white'],
+                    {
+                        'default': 'plot background',
+                        'tooltip': 'color used around a video when its aspect ratio does not fill the common cell resolution',
+                    },
+                ),
+                'fps': (
+                    'FLOAT',
+                    {
+                        'default': 0.0,
+                        'min': 0.0,
+                        'max': 1000.0,
+                        'step': 0.01,
+                        'tooltip': 'output FPS override; 0 keeps the FPS from the first cell, or 24 FPS for raw IMAGE batches',
+                    },
+                ),
+            },
+            'optional': {
+                'plot_config_grid': (
+                    'PLOT_CONFIG_GRID',
+                    {'tooltip': 'optional: ' + TOOLTIP_PLOT_CONFIG_GRID},
+                ),
+                'plot_config_header': (
+                    'PLOT_CONFIG_HF',
+                    {'tooltip': 'optional: plot configuration for the page header'},
+                ),
+                'plot_config_footer': (
+                    'PLOT_CONFIG_HF',
+                    {'tooltip': 'optional: plot configuration for the page footer'},
+                ),
+                'group_dim2_headers': (
+                    'BOOLEAN',
+                    {
+                        'default': False,
+                        'tooltip': 'group Cartesian-product DIM2 columns by their first value',
+                    },
+                ),
+                'dim2_group_header_format': (
+                    'STRING',
+                    {
+                        'default': 'Prompt: {dim2_group:.60}…',
+                        'tooltip': "group header template. Use '{dim2_group}' for the first Cartesian-product value",
+                    },
+                ),
+            },
+        }
+
+    FUNCTION = 'run'
+    RETURN_TYPES = ('VIDEO', 'IMAGE')
+    RETURN_NAMES = ('video', 'plot_frames')
+    OUTPUT_TOOLTIPS = (
+        'silent or single-audio-track XY plot video',
+        'plot frames as an IMAGE batch; connect to Create Video if needed',
+    )
+    DESCRIPTION = 'Render an XY plot for every frame of a video. Shorter cells can repeat their final frame or use a solid fill; different resolutions are normalized before plotting.'
+
+    def check_lazy_status(self, xy_plot_data, video=None, **kwargs):
+        if xy_plot_data.cached_cells is not None:
+            return []
+        if video is None:
+            return ['video']
+        return []
+
+    def _load_cached_cells(self, cached_cells, fps):
+        cells = []
+        for cell in cached_cells:
+            plot_data = _plot_data_from_dict(cell['plot_data'])
+            record = _XYPlotImageCache(key=cell['cache_key']).load_media(
+                fps if fps > 0 else 24.0
+            )
+            if record is None:
+                raise RuntimeError(
+                    'A cached XY Plot video cell disappeared; run the plot again to rebuild it'
+                )
+            cells.append((plot_data, record))
+        return cells
+
+    def _select_audio(self, cells, audio_mode, audio_cell, direction):
+        if audio_mode == 'silent':
+            return None
+        if audio_mode == 'first cell':
+            selected = cells[0][1].audio
+        elif audio_mode == 'first available':
+            selected = next(
+                (record.audio for _, record in cells if record.audio is not None),
+                None,
+            )
+        else:
+            index = _video_cell_indices(cells, audio_cell, direction)
+            selected = cells[index][1].audio
+            if selected is None:
+                raise ValueError(
+                    f"Audio cell {audio_cell.upper()} has no audio track. Choose 'first available' or another cell."
+                )
+        return _copy_audio(selected)
+
+    def _render_frames(
+        self,
+        cells,
+        dim1_header_format,
+        dim2_header_format,
+        direction,
+        temporal_padding,
+        resolution_mode,
+        resize_mode,
+        spatial_padding_color,
+        plot_config_grid,
+        plot_config_header,
+        plot_config_footer,
+        group_dim2_headers,
+        dim2_group_header_format,
+    ):
+        first_data = cells[0][0]
+        target_frames = max(record.frames.shape[0] for _, record in cells)
+        if resolution_mode == 'first cell':
+            target_height, target_width = cells[0][1].frames.shape[1:3]
+        else:
+            target_height = max(record.frames.shape[1] for _, record in cells)
+            target_width = max(record.frames.shape[2] for _, record in cells)
+
+        if temporal_padding == 'black':
+            temporal_rgb = (0, 0, 0)
+        elif temporal_padding == 'white':
+            temporal_rgb = (255, 255, 255)
+        else:
+            temporal_rgb = _background_rgb(
+                plot_config_grid.background_color
+                if temporal_padding == 'plot background'
+                else '#000000'
+            )
+        if spatial_padding_color == 'black':
+            pad_rgb = (0, 0, 0)
+        elif spatial_padding_color == 'white':
+            pad_rgb = (255, 255, 255)
+        else:
+            pad_rgb = _background_rgb(plot_config_grid.background_color)
+        output_frames = []
+
+        for frame_index in range(target_frames):
+            pager = Pager(
+                first_data,
+                (dim1_header_format, dim2_header_format),
+                direction,
+                group_dim2_headers,
+                dim2_group_header_format,
+            )
+            for plot_data, record in cells:
+                if frame_index < record.frames.shape[0]:
+                    image = _video_frame_image(
+                        record.frames[frame_index],
+                        (target_width, target_height),
+                        resize_mode,
+                        pad_rgb,
+                    )
+                elif temporal_padding == 'repeat last frame':
+                    image = _video_frame_image(
+                        record.frames[-1],
+                        (target_width, target_height),
+                        resize_mode,
+                        pad_rgb,
+                    )
+                else:
+                    image = Image.new(
+                        'RGB',
+                        (target_width, target_height),
+                        color=temporal_rgb,
+                    )
+                pager.add(plot_data, pillow_to_tensor(image))
+
+            grid = pager.make_grid(
+                PlotVars(first_data.current_page + 1, first_data.total_pages),
+                plot_config_grid,
+                plot_config_header,
+                plot_config_footer,
+            )
+            output_frames.append(pillow_to_tensor(grid.convert('RGB')))
+
+        return torch.cat(output_frames, dim=0)
+
+    def run(
+        self,
+        xy_plot_data: XYPlotQueueData,
+        video,
+        dim1_header_format: str,
+        dim2_header_format: str,
+        direction: bool,
+        audio_mode: str,
+        audio_cell: str,
+        temporal_padding: str,
+        resolution_mode: str,
+        resize_mode: str,
+        spatial_padding_color: str,
+        fps: float,
+        plot_config_grid=PlotConfigGridData(),
+        plot_config_header=None,
+        plot_config_footer=None,
+        group_dim2_headers=False,
+        dim2_group_header_format='Prompt: {dim2_group:.60}…',
+    ):
+        if xy_plot_data.cached_cells is not None:
+            cells = self._load_cached_cells(xy_plot_data.cached_cells, fps)
+        else:
+            if xy_plot_data.index == 0 or self.cells is None:
+                self.cells = {}
+                self.page = xy_plot_data.current_page
+            elif self.page != xy_plot_data.current_page:
+                self.cells = {}
+                self.page = xy_plot_data.current_page
+            self.cells[xy_plot_data.index] = (
+                xy_plot_data,
+                _video_record(video, fps if fps > 0 else 24.0),
+            )
+            expected = xy_plot_data.dim1.length * xy_plot_data.dim2.length
+            if len(self.cells) < expected:
+                return {
+                    'result': (ExecutionBlocker(None), ExecutionBlocker(None))
+                }
+            cells = [self.cells[index] for index in range(expected)]
+
+        plot_frames = self._render_frames(
+            cells,
+            dim1_header_format,
+            dim2_header_format,
+            direction,
+            temporal_padding,
+            resolution_mode,
+            resize_mode,
+            spatial_padding_color,
+            plot_config_grid,
+            plot_config_header,
+            plot_config_footer,
+            group_dim2_headers,
+            dim2_group_header_format,
+        )
+        output_fps = fps if fps > 0 else cells[0][1].frame_rate
+        audio = self._select_audio(cells, audio_mode, audio_cell, direction)
+        output_record = SimpleNamespace(
+            frames=plot_frames,
+            audio=audio,
+            frame_rate=_frame_rate(output_fps),
+        )
+        return (_video_from_record(output_record), plot_frames)
 
 
 @register_node('Plot Config: Grid', 'plot')
