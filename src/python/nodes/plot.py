@@ -468,10 +468,10 @@ def _cached_plot_cells(prompt, queue_id, dim1, dim2):
         if cache_type not in ('XYPlotImageCache', 'XYPlotVideoCache'):
             continue
         input_name = 'video' if cache_type == 'XYPlotVideoCache' else 'image'
+        inputs = node.get('inputs', {})
         cache_key = inputs.get('cache_key', '')
         if cache_type == 'XYPlotVideoCache':
             cache_key = f"{cache_key}|fps={_frame_rate(inputs.get('fps', 24.0))}"
-        inputs = node.get('inputs', {})
         xy_link = inputs.get('xy_plot_data')
         if not (
             isinstance(xy_link, list)
