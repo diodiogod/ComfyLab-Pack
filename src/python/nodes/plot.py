@@ -23,7 +23,7 @@ from ..shared.plot_data import (
     PlotVars,
 )
 from ..shared.pager import Pager
-from ..shared.utils import pillow_to_tensor
+from ..shared.utils import pillow_to_tensor, tensor_to_pillow
 
 # common tooltips
 TOOLTIP_XY_PLOT_DATA = (
