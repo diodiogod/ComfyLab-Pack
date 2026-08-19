@@ -167,7 +167,12 @@ def _canonical_runtime_value(value):
 
 
 def _canonical_prompt_node(
-    prompt, node_id, seen=None, cell_values=None
+    prompt,
+    node_id,
+    seen=None,
+    cell_values=None,
+    queue_index=None,
+    stable_cell_values=True,
 ):
     if seen is None:
         seen = set()
@@ -205,6 +210,8 @@ def _canonical_prompt_node(
                     value[0],
                     seen,
                     cell_values,
+                    queue_index,
+                    stable_cell_values,
                 ),
                 value[1],
             ]
@@ -216,12 +223,18 @@ def _canonical_prompt_node(
 
     inputs = dict(node.get('inputs', {}))
     index = inputs.get('index', 0)
-    if (
-        node.get('class_type') == 'XYPlotQueue'
-        and isinstance(index, (int, float))
-        and index < 0
-    ):
-        inputs['index'] = 0
+    if node.get('class_type') == 'XYPlotQueue':
+        if cell_values is not None and stable_cell_values:
+            # The selected dimension values identify a media cell. The
+            # queue's mutable continuation index must not make the same cell
+            # produce a different key on another run or page scan.
+            inputs['index'] = 0
+        elif queue_index is not None:
+            # Compatibility lookup for caches created before cell-stable keys
+            # used the queue position as part of their signature.
+            inputs['index'] = queue_index
+        elif isinstance(index, (int, float)) and index < 0:
+            inputs['index'] = 0
     canonical_inputs = {}
     for key in sorted(inputs):
         if (
@@ -252,6 +265,7 @@ class _XYPlotImageCache:
         cache_key='',
         cell_values=None,
         input_name='image',
+        queue_index=None,
         key=None,
     ):
         self.root = os.path.join(
@@ -262,6 +276,8 @@ class _XYPlotImageCache:
         )
         if key is not None:
             self.key = key
+            self.primary_key = key
+            self.fallback_keys = ()
             self._migrate_legacy_entry()
             return
         node = prompt.get(str(unique_id), {})
@@ -272,33 +288,74 @@ class _XYPlotImageCache:
             and str(image_link[0]) in prompt
         ):
             self.key = None
+            self.primary_key = None
+            self.fallback_keys = ()
             return
-        signature = [
-            _canonical_prompt_node(
-                prompt,
-                image_link[0],
-                cell_values=cell_values,
-            ),
-            image_link[1],
-            cache_key,
-        ]
-        encoded = json.dumps(
-            signature, sort_keys=True, separators=(',', ':'), ensure_ascii=False
-        ).encode('utf-8')
-        self.key = hashlib.sha256(encoded).hexdigest()
+
+        def make_key(
+            selected_cell_values,
+            selected_queue_index=None,
+            stable_cell_values=True,
+        ):
+            signature = [
+                _canonical_prompt_node(
+                    prompt,
+                    image_link[0],
+                    cell_values=selected_cell_values,
+                    queue_index=selected_queue_index,
+                    stable_cell_values=stable_cell_values,
+                ),
+                image_link[1],
+                cache_key,
+            ]
+            encoded = json.dumps(
+                signature,
+                sort_keys=True,
+                separators=(',', ':'),
+                ensure_ascii=False,
+            ).encode('utf-8')
+            return hashlib.sha256(encoded).hexdigest()
+
+        self.key = make_key(cell_values)
+        self.primary_key = self.key
+        # Connecting XY plot data enables cell-stable keys. Existing caches
+        # made before that connection used the complete queue signature, so
+        # retain that key as a read-only compatibility fallback. The optional
+        # metadata input must not force already-generated media to rerender.
+        fallback_keys = []
+        if cell_values is not None:
+            # Compatibility with caches created by the first cell-aware
+            # implementation, which still included the mutable queue index.
+            fallback_keys.append(
+                make_key(cell_values, stable_cell_values=False)
+            )
+            if queue_index is not None:
+                fallback_keys.append(
+                    make_key(
+                        cell_values,
+                        queue_index,
+                        stable_cell_values=False,
+                    )
+                )
+            # Compatibility with caches created before xy_plot_data was
+            # connected to the cache node, which used a positional queue key.
+            fallback_keys.append(make_key(None, queue_index))
+        self.fallback_keys = tuple(
+            key for key in fallback_keys if key is not None and key != self.key
+        )
         self._migrate_legacy_entry()
 
-    def _migrate_legacy_entry(self):
-        if (
-            self.key is None
-            or os.path.isfile(self.manifest_path)
-            or not os.path.isdir(self.legacy_root)
-        ):
+    def _migrate_legacy_entry(self, key=None):
+        key = self.key if key is None else key
+        if key is None or not os.path.isdir(self.legacy_root):
+            return
+        manifest_path = os.path.join(self.root, key + '.json')
+        if os.path.isfile(manifest_path):
             return
         names = [
             name
             for name in os.listdir(self.legacy_root)
-            if name == self.key + '.json' or name.startswith(self.key + '.')
+            if name == key + '.json' or name.startswith(key + '.')
         ]
         if not names:
             return
@@ -312,6 +369,23 @@ class _XYPlotImageCache:
     @property
     def manifest_path(self):
         return os.path.join(self.root, self.key + '.json')
+
+    def _candidate_keys(self):
+        keys = [self.key]
+        if self.primary_key not in keys:
+            keys.append(self.primary_key)
+        keys.extend(key for key in self.fallback_keys if key not in keys)
+        return [key for key in keys if key is not None]
+
+    def _remove_key(self, key):
+        if key is None or not os.path.isdir(self.root):
+            return
+        for name in os.listdir(self.root):
+            if name == key + '.json' or name.startswith(key + '.'):
+                try:
+                    os.remove(os.path.join(self.root, name))
+                except FileNotFoundError:
+                    pass
 
     def _load_frames(self, manifest):
         frames = []
@@ -379,14 +453,20 @@ class _XYPlotImageCache:
         )
 
     def load_manifest(self):
-        if self.key is None or not os.path.isfile(self.manifest_path):
-            return None
-        try:
-            with open(self.manifest_path, 'r', encoding='utf-8') as file:
-                return json.load(file)
-        except (OSError, ValueError, json.JSONDecodeError):
-            self.remove()
-            return None
+        for key in self._candidate_keys():
+            self._migrate_legacy_entry(key)
+            path = os.path.join(self.root, key + '.json')
+            if not os.path.isfile(path):
+                continue
+            try:
+                with open(path, 'r', encoding='utf-8') as file:
+                    manifest = json.load(file)
+            except (OSError, ValueError, json.JSONDecodeError):
+                self._remove_key(key)
+                continue
+            self.key = key
+            return manifest
+        return None
 
     def save(
         self,
@@ -437,14 +517,8 @@ class _XYPlotImageCache:
             json.dump(manifest, file)
 
     def remove(self):
-        if self.key is None or not os.path.isdir(self.root):
-            return
-        for name in os.listdir(self.root):
-            if name == self.key + '.json' or name.startswith(self.key + '.'):
-                try:
-                    os.remove(os.path.join(self.root, name))
-                except FileNotFoundError:
-                    pass
+        for key in self._candidate_keys():
+            self._remove_key(key)
 
     def prune(self, max_cache_mb):
         limit = max_cache_mb * 1024 * 1024
@@ -499,6 +573,7 @@ def _cached_plot_cells(prompt, queue_id, dim1, dim2):
                 cache_key,
                 cell_values=(dim1[dim1_index], dim2[dim2_index]),
                 input_name=input_name,
+                queue_index=index,
             )
             manifest = cache.load_manifest()
             if manifest is None or (

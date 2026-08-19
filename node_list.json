@@ -4,7 +4,7 @@
   "XY Plot: Video Cache (lab)": "Cache each XY cell as video frames and optional audio in the ComfyUI user directory. Accepts VIDEO or decoded IMAGE frame batches",
   "XY Plot: Select Cell (lab)": "Select one XY plot image using an Excel-style cell such as A1 or C3. Connect the output to Preview Image or Save Image",
   "XY Plot: Render (lab)": "Render the generated images as grids",
-  "XY Plot: Video Render (lab)": "Render an XY plot for every frame of a video",
+  "XY Plot: Video Render (lab)": "Render an XY plot for every frame of a video. Shorter cells can repeat their final frame or use a solid fill; different resolutions are normalized before plotting",
   "Plot Config: Grid (lab)": "Various options to customize the grid appearance",
   "Plot Config: Header/Footer (lab)": "Various options to customize the appearance of the page header or footer",
   "XY Plot: Split Data (lab)": "Split the queue processing data into individual values",
