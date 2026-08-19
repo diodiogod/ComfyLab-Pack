@@ -65,6 +65,7 @@ export function QUEUE_STATUS(
 ) {
 	if (!app) throw new Error('QUEUE_STATUS: app is undefined')
 	let hasError = false
+	let cancellationRequested = false
 	const widget = node.addWidget('button', inputName, 0, () => {
 		if (hasError) {
 			hasError = false
@@ -84,6 +85,37 @@ export function QUEUE_STATUS(
 	reset()
 	widget.label = LABEL_READY
 
+	const isContinuationForThisNode = (item: unknown) => {
+		if (typeof item !== 'object' || item === null) return false
+		const prompt = (item as { prompt?: unknown }).prompt
+		if (!Array.isArray(prompt) || prompt.length < 3) return false
+		const graph = prompt[2]
+		if (typeof graph !== 'object' || graph === null) return false
+		const graphNode = (graph as Record<string, unknown>)[String(node.id)]
+		if (typeof graphNode !== 'object' || graphNode === null) return false
+		const classType = (graphNode as { class_type?: unknown }).class_type
+		const thisType = node.comfyClass ?? node.type
+		return typeof classType === 'string' && classType === thisType
+	}
+
+	const cancelPendingContinuations = async () => {
+		try {
+			const queue = await api.getQueue()
+			for (const item of queue.Pending ?? []) {
+				if (!isContinuationForThisNode(item)) continue
+				const prompt = (item as { prompt?: unknown }).prompt
+				if (!Array.isArray(prompt) || typeof prompt[1] !== 'string') continue
+				try {
+					await api.deleteItem('queue', prompt[1])
+				} catch (error) {
+					console.warn('ComfyLab could not remove a pending XY plot continuation', error)
+				}
+			}
+		} catch (error) {
+			console.warn('ComfyLab could not inspect pending XY plot continuations', error)
+		}
+	}
+
 	// handle page refresh: onConfigure is called after onNodeCreated, after applying serialized values, so we force reset here
 	const originalOnConfigure = node.onConfigure
 	node.onConfigure = function () {
@@ -93,7 +125,7 @@ export function QUEUE_STATUS(
 
 	const originalOnExecuted = node.onExecuted
 	node.onExecuted = function (message: unknown) {
-		if (hasError) return
+		if (hasError || cancellationRequested) return
 
 		originalOnExecuted?.call(this, message)
 		if (isQueueMessage(message)) {
@@ -109,6 +141,7 @@ export function QUEUE_STATUS(
 				api.addEventListener(
 					'execution_success',
 					() => {
+						if (cancellationRequested) return
 						widget.label = `Complete: ${widget.total} / ${widget.total}`
 						reset()
 					},
@@ -121,12 +154,19 @@ export function QUEUE_STATUS(
 	// handle API interruptions and errors
 	const original_api_interrupt = api.interrupt
 	api.interrupt = async function (...args) {
+		cancellationRequested = true
+		await cancelPendingContinuations()
 		await original_api_interrupt.apply(this, args)
 		widget.label = LABEL_INTERRUPT
 		reset()
 	}
 
 	widget.beforeQueued = function () {
+		// A negative value means this is a new user-started queue. Automatic
+		// continuations set the next positive index before queueing themselves.
+		if (cancellationRequested && widget.value < 0) {
+			cancellationRequested = false
+		}
 		// An already queued continuation has run beforeQueued before an error.
 		// A later user-started queue can therefore safely clear the old lock.
 		if (hasError) {
