@@ -37,6 +37,7 @@ Latest additions:
 - **not restricted to KSampler**: can be adapted to any process generating images
 - **many configuration options**:
   - custom row/col headers, with string templating
+    - safe string expressions are supported for slicing and cleanup, for example `{dim1[:20]}` or `{dim1.replace("C:/models/", "")}`
   - font (type / size / color)
     - in row / column headers, and/or page header / footer (each configurable differently)
     - either one of the 4 fonts shipped with the extension, or any other TTF font on your disk

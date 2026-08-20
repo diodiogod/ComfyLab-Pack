@@ -12,6 +12,10 @@ They are useful to create a string from a template, and **any number of inputs**
 > [!NOTE]
 > Inputs can be of the following ComfyUI types: `STRING`, `INT`, `FLOAT`, `BOOLEAN`.
 
+In addition to the standard Python format syntax, this extension supports a
+small safe expression syntax for string values. This is also available in XY
+Plot header formats.
+
 ## How to use
 
 Here we will just cover the most basic usage, but please note that Python string `format()` allows to do very interesting things, beyond the standard string replacement: padding, truncating, ...
@@ -27,6 +31,22 @@ Straightforward, isn't it?
 
 > [!TIP]
 > This way, it's **very simple to concatenate 2 strings, append text to a string, pad / truncate, ... many operations in one single node!**
+
+### String expressions
+
+The following expressions can be used inside a placeholder:
+
+| expression | result |
+| :--- | :--- |
+| `{arg0[:20]}` | first 20 characters |
+| `{arg0[10:]}` | everything after the first 10 characters |
+| `{arg0.replace("old", "new")}` | replace a specific string |
+| `{arg0.removeprefix("prefix_")}` | remove a matching prefix |
+| `{arg0.removesuffix(".png")}` | remove a matching suffix |
+
+Only indexing, slicing, and approved string methods are accepted; arbitrary
+Python expressions are not evaluated. Existing format specifications continue
+to work, such as `{arg1:g}` or `{arg0:.20s}`.
 
 And last but not least: at stated above, it can take **other types than strings: integer, float, boolean** (and surely others).
 

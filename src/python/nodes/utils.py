@@ -12,6 +12,7 @@ import comfy.utils
 
 from ..collection.register_nodes import register_node
 from ..shared.utils import ANY_TYPE, pillow_to_tensor
+from ..shared.formatting import format_string
 
 
 @register_node('Format: String', 'utils')
@@ -32,7 +33,7 @@ class FormatString:
                     {
                         'default': 'first arg by name: {arg0}, second by index: {1}',
                         'multiline': False,
-                        'tooltip': "placeholders can be either '{arg0}', '{arg1}, ... or '{0}', '{1}', ...",
+                        'tooltip': "placeholders can be either '{arg0}', '{arg1}', ... or '{0}', '{1}', ...; string expressions such as {arg0[:20]} and replace(...) are also supported",
                     },
                 ),
             }
@@ -48,11 +49,11 @@ class FormatString:
     FUNCTION = 'run'
     RETURN_TYPES = ('STRING',)
     RETURN_NAMES = ('formatted',)
-    DESCRIPTION = "Format a string, with any number of inputs.\nPlaceholders can be either '{arg0}', '{arg1}, ... or '{0}', '{1}', ...\nInputs can be strings, integers, floats, booleans.\nSearch for 'python format' for all configuration options, there are many!"
+    DESCRIPTION = "Format a string, with any number of inputs.\nPlaceholders can be either '{arg0}', '{arg1}', ... or '{0}', '{1}', ...\nString expressions support slicing and cleanup, for example '{arg0[:20]}' or '{arg0.replace(\"old\", \"\")}'.\nInputs can be strings, integers, floats, booleans.\nSearch for 'python format' for all configuration options, there are many!"
 
     def run(self, format: str, **kw):
         # handle both index and name references
-        output = format.format(*kw.values(), **kw)
+        output = format_string(format, *kw.values(), **kw)
 
         return (output,)
 
@@ -75,7 +76,7 @@ class FormatMultiline:
                     {
                         'default': 'first arg by name: {arg0}\nsecond by index: {1}',
                         'multiline': True,
-                        'tooltip': "placeholders can be either '{arg0}', '{arg1}, ... or '{0}', '{1}', ...",
+                        'tooltip': "placeholders can be either '{arg0}', '{arg1}', ... or '{0}', '{1}', ...; string expressions such as {arg0[:20]} and replace(...) are also supported",
                     },
                 ),
             }
@@ -91,11 +92,11 @@ class FormatMultiline:
     FUNCTION = 'run'
     RETURN_TYPES = ('STRING',)
     RETURN_NAMES = ('formatted',)
-    DESCRIPTION = "Format a multiline string, with any number of inputs.\nPlaceholders can be either '{arg0}', '{arg1}, ... or '{0}', '{1}', ...\nInputs can be strings, integers, floats, booleans."
+    DESCRIPTION = "Format a multiline string, with any number of inputs.\nPlaceholders can be either '{arg0}', '{arg1}', ... or '{0}', '{1}', ...\nString expressions support slicing and cleanup, for example '{arg0[:20]}' or '{arg0.replace(\"old\", \"\")}'.\nInputs can be strings, integers, floats, booleans."
 
     def run(self, format: str, **kw):
         # handle both index and name references
-        output = format.format(*kw.values(), **kw)
+        output = format_string(format, *kw.values(), **kw)
 
         return (output,)
 
