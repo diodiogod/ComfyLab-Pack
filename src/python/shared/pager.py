@@ -8,6 +8,7 @@ from .plot_data import (
     PlotVars,
 )
 from .grid import Grid
+from .formatting import format_string
 
 
 class Pager:
@@ -64,11 +65,11 @@ class Pager:
         # TODO: catch exception and set default header?
         if xy_plot_data.dim1.index >= len(self.dim1.headers):
             self.dim1.headers.append(
-                self.header_formats[0].format(dim1=xy_plot_data.dim1.value)
+                format_string(self.header_formats[0], dim1=xy_plot_data.dim1.value)
             )
         if xy_plot_data.dim2.index >= len(self.dim2.headers):
             self.dim2.headers.append(
-                self.header_formats[1].format(dim2=xy_plot_data.dim2.value)
+                format_string(self.header_formats[1], dim2=xy_plot_data.dim2.value)
             )
             self.dim2.values[xy_plot_data.dim2.index] = xy_plot_data.dim2.value
 

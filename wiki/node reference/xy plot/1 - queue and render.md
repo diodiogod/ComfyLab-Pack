@@ -49,6 +49,12 @@ For more detailed explanations, please check the [core concepts](./0%20-%20core%
 
 - enter here a template string, following the syntax of Python string `format()` method
 - the `{dim1}` and `{dim2}` placeholders will be replaced by the current dim1 / dim2 value
+- safe string expressions can trim or clean values directly inside the placeholder:
+  - `{dim1[:20]}` keeps the first 20 characters
+  - `{dim1[10:]}` removes the first 10 characters
+  - `{dim1.replace("C:/models/", "")}` removes a specific string
+  - `{dim1.removeprefix("epoch_")}` and `{dim1.removesuffix(".safetensors")}` remove only a matching prefix or suffix
+  - use forward slashes in paths, or escape Windows backslashes, for example `J:\\models\\loras\\`
 - very handy if you want to prefix the row / column headers, for example:
   - if you have CFG values in dim1, by default the headers will be `7.5`, `8`, ...
   - just change the dim1 header format to `CFG: {dim1}` and you will get: `CFG: 7.5`, `CFG: 8`, ...

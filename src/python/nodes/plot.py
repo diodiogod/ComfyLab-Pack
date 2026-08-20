@@ -1176,14 +1176,14 @@ class XYPlotRender:
                     'STRING',
                     {
                         'default': '{dim1}',
-                        'tooltip': "template text to be displayed as dim1 header.\nthe '{dim1'} placeholder will be replaced by the current value.\nUse '\\n' for multiline text.",
+                        'tooltip': "template text to be displayed as dim1 header.\nthe '{dim1}' placeholder will be replaced by the current value.\nSafe expressions include {dim1[:20]}; string replacement is also supported.\nUse '\\n' for multiline text.",
                     },
                 ),
                 'dim2_header_format': (
                     'STRING',
                     {
                         'default': '{dim2}',
-                        'tooltip': "template text to be displayed as dim2 header.\nthe '{dim2'} placeholder will be replaced by the current value.\nUse '\\n' for multiline text.",
+                        'tooltip': "template text to be displayed as dim2 header.\nthe '{dim2}' placeholder will be replaced by the current value.\nSafe expressions include {dim2[:20]}; string replacement is also supported.\nUse '\\n' for multiline text.",
                     },
                 ),
                 'direction': (
