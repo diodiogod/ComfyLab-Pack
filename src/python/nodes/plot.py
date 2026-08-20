@@ -816,7 +816,7 @@ class XYPlotImageCache:
                     ['use cache', 'refresh', 'bypass'],
                     {
                         'default': 'use cache',
-                        'tooltip': 'use cache skips the image branch when the same generation inputs were cached',
+                        'tooltip': 'use cache skips the image branch when the same generation inputs were cached. Persistent cache location: <ComfyUI user directory>/comfylab/xy_cache',
                     },
                 ),
                 'cache_key': (
@@ -853,7 +853,7 @@ class XYPlotImageCache:
     FUNCTION = 'run'
     RETURN_TYPES = ('IMAGE',)
     RETURN_NAMES = ('image',)
-    DESCRIPTION = 'Cache each generated plot image in the ComfyUI user directory. Place this node immediately before XY Plot: Render to re-render plot styling without sampling again, including after restarting ComfyUI.'
+    DESCRIPTION = 'Cache each generated plot image at <ComfyUI user directory>/comfylab/xy_cache. Place this node immediately before XY Plot: Render to re-render plot styling without sampling again, including after restarting ComfyUI.'
 
     def check_lazy_status(
         self,
@@ -950,7 +950,7 @@ class XYPlotVideoCache:
                     ['use cache', 'refresh', 'bypass'],
                     {
                         'default': 'use cache',
-                        'tooltip': 'use cache skips the video branch when the same generation inputs were cached',
+                        'tooltip': 'use cache skips the video branch when the same generation inputs were cached. Persistent cache location: <ComfyUI user directory>/comfylab/xy_cache',
                     },
                 ),
                 'cache_key': (
@@ -987,7 +987,7 @@ class XYPlotVideoCache:
     FUNCTION = 'run'
     RETURN_TYPES = ('VIDEO',)
     RETURN_NAMES = ('video',)
-    DESCRIPTION = 'Cache each XY cell as video frames and optional audio in the ComfyUI user directory. Accepts VIDEO or decoded IMAGE frame batches.'
+    DESCRIPTION = 'Cache each XY cell as video frames and optional audio at <ComfyUI user directory>/comfylab/xy_cache. Accepts VIDEO or decoded IMAGE frame batches.'
 
     def _cache(
         self,
