@@ -37,7 +37,12 @@ Latest additions:
 - **not restricted to KSampler**: can be adapted to any process generating images
 - **many configuration options**:
   - custom row/col headers, with string templating
-    - safe string expressions are supported for slicing and cleanup, for example `{dim1[:20]}` or `{dim1.replace("C:/models/", "")}`
+    - safe expressions are supported in XY Plot and Format String nodes:
+      - `{dim1[:20]}` — first 20 characters
+      - `{dim1[10:]}` — remove the first 10 characters
+      - `{dim1.replace("C:/models/", "")}` — remove a specific string or path
+      - `{dim1.removeprefix("epoch_")}` — remove a matching prefix
+      - `{dim1.removesuffix(".safetensors")}` — remove a matching suffix
   - font (type / size / color)
     - in row / column headers, and/or page header / footer (each configurable differently)
     - either one of the 4 fonts shipped with the extension, or any other TTF font on your disk
