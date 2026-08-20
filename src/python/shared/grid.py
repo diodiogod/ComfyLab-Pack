@@ -5,6 +5,7 @@ import math
 from dataclasses import asdict
 
 from .plot_data import PlotConfigGridData, PlotConfigHFData, PlotVars
+from .formatting import format_string
 
 STATIC_DIR = (Path(__file__).parent.parent.parent.parent / 'static').resolve()
 
@@ -330,7 +331,7 @@ class Grid:
     def _apply_template(self, template: str, plot_vars: PlotVars) -> str:
         text = template.replace(r'\n', '\n')
         try:
-            text = text.format(**asdict(plot_vars))
+            text = format_string(text, **asdict(plot_vars))
         except KeyError as e:
             text = "Error: unknown variable '{}'".format(e.args[0])
         return text

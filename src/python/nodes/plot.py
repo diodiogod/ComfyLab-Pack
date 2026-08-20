@@ -1176,14 +1176,14 @@ class XYPlotRender:
                     'STRING',
                     {
                         'default': '{dim1}',
-                        'tooltip': "template text to be displayed as dim1 header.\nthe '{dim1'} placeholder will be replaced by the current value.\nUse '\\n' for multiline text.",
+                        'tooltip': "template text to be displayed as dim1 header.\nthe '{dim1}' placeholder will be replaced by the current value.\nSafe expressions include {dim1[:20]}; string replacement is also supported.\nUse '\\n' for multiline text.",
                     },
                 ),
                 'dim2_header_format': (
                     'STRING',
                     {
                         'default': '{dim2}',
-                        'tooltip': "template text to be displayed as dim2 header.\nthe '{dim2'} placeholder will be replaced by the current value.\nUse '\\n' for multiline text.",
+                        'tooltip': "template text to be displayed as dim2 header.\nthe '{dim2}' placeholder will be replaced by the current value.\nSafe expressions include {dim2[:20]}; string replacement is also supported.\nUse '\\n' for multiline text.",
                     },
                 ),
                 'direction': (
@@ -1380,14 +1380,14 @@ class XYPlotVideoRender:
                     'STRING',
                     {
                         'default': '{dim1}',
-                        'tooltip': "template text for the dim1 header; use '{dim1}' and '\\n' for multiline text",
+                        'tooltip': "template text for the dim1 header; use '{dim1}', safe expressions such as {dim1[:20]}, and '\\n' for multiline text",
                     },
                 ),
                 'dim2_header_format': (
                     'STRING',
                     {
                         'default': '{dim2}',
-                        'tooltip': "template text for the dim2 header; use '{dim2}' and '\\n' for multiline text",
+                        'tooltip': "template text for the dim2 header; use '{dim2}', safe expressions such as {dim2[:20]}, and '\\n' for multiline text",
                     },
                 ),
                 'direction': (
