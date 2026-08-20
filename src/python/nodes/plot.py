@@ -1778,6 +1778,42 @@ class PlotConfigGrid:
                     },
                 ),
             },
+            'optional': {
+                'wrap_col_headers_mode': (
+                    ['manual', 'auto'],
+                    {
+                        'default': 'manual',
+                        'tooltip': 'manual uses the character count above; auto measures the selected font against each cell width',
+                    },
+                ),
+                'wrap_row_headers_mode': (
+                    ['manual', 'auto'],
+                    {
+                        'default': 'manual',
+                        'tooltip': 'manual uses the character count above; auto measures the selected font against a width proportional to each cell',
+                    },
+                ),
+                'auto_wrap_col_width': (
+                    'FLOAT',
+                    {
+                        'default': 0.9,
+                        'min': 0.1,
+                        'max': 2.0,
+                        'step': 0.05,
+                        'tooltip': 'automatic column-header line width as a multiple of the cell width',
+                    },
+                ),
+                'auto_wrap_row_width': (
+                    'FLOAT',
+                    {
+                        'default': 0.9,
+                        'min': 0.1,
+                        'max': 2.0,
+                        'step': 0.05,
+                        'tooltip': 'automatic row-header line width as a multiple of the cell width',
+                    },
+                ),
+            },
         }
 
     FUNCTION = 'run'
@@ -1798,6 +1834,10 @@ class PlotConfigGrid:
         wrap_col_headers: int,
         wrap_row_headers: int,
         group_gap: int,
+        wrap_col_headers_mode: str = 'manual',
+        wrap_row_headers_mode: str = 'manual',
+        auto_wrap_col_width: float = 0.9,
+        auto_wrap_row_width: float = 0.9,
     ):
         plot_config_grid = PlotConfigGridData(
             gap=gap,
@@ -1810,6 +1850,10 @@ class PlotConfigGrid:
             pad_row_headers=pad_row_headers,
             wrap_col_headers=wrap_col_headers,
             wrap_row_headers=wrap_row_headers,
+            wrap_col_headers_mode=wrap_col_headers_mode,
+            wrap_row_headers_mode=wrap_row_headers_mode,
+            auto_wrap_col_width=auto_wrap_col_width,
+            auto_wrap_row_width=auto_wrap_row_width,
         )
         return (plot_config_grid,)
 

@@ -21,6 +21,45 @@ interface IQueueMessage {
 	index: [number]
 	total: [number]
 }
+interface IQueueCancellationController {
+	markCancellation: () => void
+	drainPendingContinuations: () => Promise<void>
+}
+
+const cancellationControllers = new Set<IQueueCancellationController>()
+let cancellationHooksInstalled = false
+
+function installCancellationHooks() {
+	if (cancellationHooksInstalled) return
+	cancellationHooksInstalled = true
+
+	const originalApiInterrupt = api.interrupt
+	api.interrupt = async function (...args) {
+		const controllers = [...cancellationControllers]
+		for (const controller of controllers) controller.markCancellation()
+		// Remove queued continuations before interrupting the active prompt. If we
+		// interrupt first, ComfyUI may promote the next continuation to running
+		// before it can be deleted.
+		await Promise.allSettled(
+			controllers.map((controller) => controller.drainPendingContinuations()),
+		)
+		await originalApiInterrupt.apply(this, args)
+		await Promise.allSettled(
+			controllers.map((controller) => controller.drainPendingContinuations()),
+		)
+	}
+
+	// Older bundled frontend typings omit this event even though the backend
+	// emits it and current ComfyUI handles it.
+	;(api as unknown as EventTarget).addEventListener('execution_interrupted', () => {
+		const controllers = [...cancellationControllers]
+		for (const controller of controllers) controller.markCancellation()
+		void Promise.allSettled(
+			controllers.map((controller) => controller.drainPendingContinuations()),
+		)
+	})
+}
+
 function isQueueMessage(message: unknown): message is IQueueMessage {
 	const msg = message as IQueueMessage
 	return (
@@ -64,8 +103,10 @@ export function QUEUE_STATUS(
 	app: ComfyApp | undefined, // forced to accept undefined as per ComfyWidgetConstructor
 ) {
 	if (!app) throw new Error('QUEUE_STATUS: app is undefined')
+	installCancellationHooks()
 	let hasError = false
 	let cancellationRequested = false
+	let automaticQueueing = false
 	const widget = node.addWidget('button', inputName, 0, () => {
 		if (hasError) {
 			hasError = false
@@ -116,6 +157,36 @@ export function QUEUE_STATUS(
 		}
 	}
 
+	const drainPendingContinuations = async () => {
+		// A continuation POST can already be in flight when the user clicks X.
+		// Re-scan briefly so a prompt arriving just after the interrupt is
+		// removed before it can become the next running job.
+		for (const delay of [0, 50, 150]) {
+			if (delay > 0) {
+				await new Promise<void>((resolve) => window.setTimeout(resolve, delay))
+			}
+			await cancelPendingContinuations()
+		}
+	}
+
+	const markCancellation = () => {
+		cancellationRequested = true
+		widget.label = LABEL_INTERRUPT
+		reset()
+	}
+
+	const cancellationController: IQueueCancellationController = {
+		markCancellation,
+		drainPendingContinuations,
+	}
+	cancellationControllers.add(cancellationController)
+
+	const originalOnRemoved = node.onRemoved
+	node.onRemoved = function () {
+		cancellationControllers.delete(cancellationController)
+		originalOnRemoved?.apply(this)
+	}
+
 	// handle page refresh: onConfigure is called after onNodeCreated, after applying serialized values, so we force reset here
 	const originalOnConfigure = node.onConfigure
 	node.onConfigure = function () {
@@ -124,6 +195,17 @@ export function QUEUE_STATUS(
 	}
 
 	const originalOnExecuted = node.onExecuted
+	const queueContinuation = async () => {
+		if (cancellationRequested) return
+		automaticQueueing = true
+		try {
+			if (!cancellationRequested) await app.queuePrompt(0, 1)
+		} finally {
+			automaticQueueing = false
+			if (cancellationRequested) await drainPendingContinuations()
+		}
+	}
+
 	node.onExecuted = function (message: unknown) {
 		if (hasError || cancellationRequested) return
 
@@ -134,7 +216,7 @@ export function QUEUE_STATUS(
 			if (data.index < data.total - 1) {
 				widget.value = data.index + 1
 				widget.label = `Processing: ${widget.value} / ${widget.total}`
-				app.queuePrompt(0, 1)
+				void queueContinuation()
 			} else {
 				widget.label = `Processing: ${widget.value + 1} / ${widget.total}`
 				// wait for the execution to end before displaying the "Complete" label; note: the listener will be automatically deleted after use
@@ -151,20 +233,11 @@ export function QUEUE_STATUS(
 		}
 	}
 
-	// handle API interruptions and errors
-	const original_api_interrupt = api.interrupt
-	api.interrupt = async function (...args) {
-		cancellationRequested = true
-		await cancelPendingContinuations()
-		await original_api_interrupt.apply(this, args)
-		widget.label = LABEL_INTERRUPT
-		reset()
-	}
-
 	widget.beforeQueued = function () {
 		// A negative value means this is a new user-started queue. Automatic
-		// continuations set the next positive index before queueing themselves.
-		if (cancellationRequested && widget.value < 0) {
+		// continuations are tracked explicitly because an interrupt resets the
+		// widget while an automatic queue request may still be in flight.
+		if (cancellationRequested && widget.value < 0 && !automaticQueueing) {
 			cancellationRequested = false
 		}
 		// An already queued continuation has run beforeQueued before an error.
@@ -178,6 +251,7 @@ export function QUEUE_STATUS(
 	}
 	api.addEventListener('execution_error', (event) => {
 		const error = formatExecutionError(event)
+		markCancellation()
 		hasError = true
 		widget.label = error.label
 		widget.tooltip = error.tooltip
@@ -188,7 +262,7 @@ export function QUEUE_STATUS(
 			life: 10000,
 		})
 		console.error('ComfyLab XY Plot execution error', error.detail)
-		reset()
+		void drainPendingContinuations()
 	})
 
 	return widget

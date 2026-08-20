@@ -34,6 +34,10 @@ class PlotConfigGridData:
     pad_row_headers: int = 50
     wrap_col_headers: int = 0
     wrap_row_headers: int = 0
+    wrap_col_headers_mode: str = 'manual'
+    wrap_row_headers_mode: str = 'manual'
+    auto_wrap_col_width: float = 0.9
+    auto_wrap_row_width: float = 0.9
 
 
 @dataclass

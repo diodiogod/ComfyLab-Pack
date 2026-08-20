@@ -101,25 +101,46 @@ class Grid:
         return image
 
     def _add_headers(self, grid_image: Image.Image, col_group_headers=None):
+        # Load the selected font before wrapping so automatic mode can measure
+        # the real rendered text instead of estimating from character counts.
+        font = self._load_font(self.config_grid.font, self.config_grid.font_size)
+
         # normalize the headers, to respect the wrap configs
         self.headers = (
-            self._normalize_headers(self.headers[0], self.config_grid.wrap_col_headers),
-            self._normalize_headers(self.headers[1], self.config_grid.wrap_row_headers),
+            self._normalize_headers(
+                self.headers[0],
+                self.config_grid.wrap_col_headers,
+                self.config_grid.wrap_col_headers_mode,
+                font,
+                self.max_cell_size[0] * self.config_grid.auto_wrap_col_width,
+            ),
+            self._normalize_headers(
+                self.headers[1],
+                self.config_grid.wrap_row_headers,
+                self.config_grid.wrap_row_headers_mode,
+                font,
+                self.max_cell_size[0] * self.config_grid.auto_wrap_row_width,
+            ),
         )
         if col_group_headers:
             col_group_headers = [
                 (
                     self._normalize_headers(
-                        [header], self.config_grid.wrap_col_headers
+                        [header],
+                        self.config_grid.wrap_col_headers,
+                        self.config_grid.wrap_col_headers_mode,
+                        font,
+                        (
+                            span * self.max_cell_size[0]
+                            + (span - 1) * self.config_grid.gap
+                        )
+                        * self.config_grid.auto_wrap_col_width,
                     )[0],
                     start,
                     span,
                 )
                 for header, start, span in col_group_headers
             ]
-
-        # load font
-        font = self._load_font(self.config_grid.font, self.config_grid.font_size)
 
         # calculate height and width of headers at top and left
         top_margin, left_margin = self._calc_headers_margins(
@@ -198,14 +219,65 @@ class Grid:
         font = ImageFont.truetype(str(full_path), size=font_size)
         return font
 
-    def _normalize_headers(self, headers: list[str], wrap: int) -> list[str]:
+    def _normalize_headers(
+        self,
+        headers: list[str],
+        wrap: int,
+        wrap_mode: str = 'manual',
+        font: ImageFont = None,
+        max_width: float = 0,
+    ) -> list[str]:
         normalized = []
         for header in headers:
             header = header.replace(r'\n', '\n')
-            if wrap > 0:
+            if wrap_mode == 'auto' and font and max_width > 0:
+                header = self._wrap_text_to_width(header, font, max_width)
+            elif wrap > 0:
                 header = textwrap.fill(header, wrap, break_on_hyphens=True)
             normalized.append(header)
         return normalized
+
+    def _wrap_text_to_width(
+        self, text: str, font: ImageFont, max_width: float
+    ) -> str:
+        """Wrap text to a rendered pixel width while preserving explicit lines."""
+        return '\n'.join(
+            self._wrap_line_to_width(line, font, max_width)
+            for line in text.split('\n')
+        )
+
+    def _wrap_line_to_width(
+        self, line: str, font: ImageFont, max_width: float
+    ) -> str:
+        if not line or font.getlength(line) <= max_width:
+            return line
+
+        output = []
+        current = ''
+        for word in line.split():
+            candidate = word if not current else f'{current} {word}'
+            if font.getlength(candidate) <= max_width:
+                current = candidate
+                continue
+
+            if current:
+                output.append(current)
+                current = ''
+
+            # Split exceptionally long words so automatic wrapping always fits.
+            chunk = ''
+            for char in word:
+                candidate = chunk + char
+                if chunk and font.getlength(candidate) > max_width:
+                    output.append(chunk)
+                    chunk = char
+                else:
+                    chunk = candidate
+            current = chunk
+
+        if current:
+            output.append(current)
+        return '\n'.join(output)
 
     def _calc_header_tier_height(self, font: ImageFont, headers):
         height = 0

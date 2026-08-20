@@ -1,6 +1,28 @@
 import { api } from '../../../../scripts/api.js';
 const LABEL_READY = 'Ready';
 const LABEL_INTERRUPT = 'Interrupted';
+const cancellationControllers = new Set();
+let cancellationHooksInstalled = false;
+function installCancellationHooks() {
+    if (cancellationHooksInstalled)
+        return;
+    cancellationHooksInstalled = true;
+    const originalApiInterrupt = api.interrupt;
+    api.interrupt = async function (...args) {
+        const controllers = [...cancellationControllers];
+        for (const controller of controllers)
+            controller.markCancellation();
+        await Promise.allSettled(controllers.map((controller) => controller.drainPendingContinuations()));
+        await originalApiInterrupt.apply(this, args);
+        await Promise.allSettled(controllers.map((controller) => controller.drainPendingContinuations()));
+    };
+    api.addEventListener('execution_interrupted', () => {
+        const controllers = [...cancellationControllers];
+        for (const controller of controllers)
+            controller.markCancellation();
+        void Promise.allSettled(controllers.map((controller) => controller.drainPendingContinuations()));
+    });
+}
 function isQueueMessage(message) {
     const msg = message;
     return (Array.isArray(msg.index) &&
@@ -36,8 +58,10 @@ function formatExecutionError(event) {
 export function QUEUE_STATUS(node, inputName, _inputData, app) {
     if (!app)
         throw new Error('QUEUE_STATUS: app is undefined');
+    installCancellationHooks();
     let hasError = false;
     let cancellationRequested = false;
+    let automaticQueueing = false;
     const widget = node.addWidget('button', inputName, 0, () => {
         if (hasError) {
             hasError = false;
@@ -89,12 +113,49 @@ export function QUEUE_STATUS(node, inputName, _inputData, app) {
             console.warn('ComfyLab could not inspect pending XY plot continuations', error);
         }
     };
+    const drainPendingContinuations = async () => {
+        for (const delay of [0, 50, 150]) {
+            if (delay > 0) {
+                await new Promise((resolve) => window.setTimeout(resolve, delay));
+            }
+            await cancelPendingContinuations();
+        }
+    };
+    const markCancellation = () => {
+        cancellationRequested = true;
+        widget.label = LABEL_INTERRUPT;
+        reset();
+    };
+    const cancellationController = {
+        markCancellation,
+        drainPendingContinuations,
+    };
+    cancellationControllers.add(cancellationController);
+    const originalOnRemoved = node.onRemoved;
+    node.onRemoved = function () {
+        cancellationControllers.delete(cancellationController);
+        originalOnRemoved?.apply(this);
+    };
     const originalOnConfigure = node.onConfigure;
     node.onConfigure = function () {
         originalOnConfigure?.apply(this);
         reset();
     };
     const originalOnExecuted = node.onExecuted;
+    const queueContinuation = async () => {
+        if (cancellationRequested)
+            return;
+        automaticQueueing = true;
+        try {
+            if (!cancellationRequested)
+                await app.queuePrompt(0, 1);
+        }
+        finally {
+            automaticQueueing = false;
+            if (cancellationRequested)
+                await drainPendingContinuations();
+        }
+    };
     node.onExecuted = function (message) {
         if (hasError || cancellationRequested)
             return;
@@ -106,7 +167,7 @@ export function QUEUE_STATUS(node, inputName, _inputData, app) {
             if (data.index < data.total - 1) {
                 widget.value = data.index + 1;
                 widget.label = `Processing: ${widget.value} / ${widget.total}`;
-                app.queuePrompt(0, 1);
+                void queueContinuation();
             }
             else {
                 widget.label = `Processing: ${widget.value + 1} / ${widget.total}`;
@@ -119,16 +180,8 @@ export function QUEUE_STATUS(node, inputName, _inputData, app) {
             }
         }
     };
-    const original_api_interrupt = api.interrupt;
-    api.interrupt = async function (...args) {
-        cancellationRequested = true;
-        await cancelPendingContinuations();
-        await original_api_interrupt.apply(this, args);
-        widget.label = LABEL_INTERRUPT;
-        reset();
-    };
     widget.beforeQueued = function () {
-        if (cancellationRequested && widget.value < 0) {
+        if (cancellationRequested && widget.value < 0 && !automaticQueueing) {
             cancellationRequested = false;
         }
         if (hasError) {
@@ -140,6 +193,7 @@ export function QUEUE_STATUS(node, inputName, _inputData, app) {
     };
     api.addEventListener('execution_error', (event) => {
         const error = formatExecutionError(event);
+        markCancellation();
         hasError = true;
         widget.label = error.label;
         widget.tooltip = error.tooltip;
@@ -150,7 +204,7 @@ export function QUEUE_STATUS(node, inputName, _inputData, app) {
             life: 10000,
         });
         console.error('ComfyLab XY Plot execution error', error.detail);
-        reset();
+        void drainPendingContinuations();
     });
     return widget;
 }
