@@ -21,6 +21,8 @@ from ..shared.plot_data import (
     PlotConfigHFData,
     PlotConfigGridData,
     PlotVars,
+    PlotHeaderOverrideRule,
+    PlotHeaderOverridesData,
 )
 from ..shared.pager import Pager
 from ..shared.utils import pillow_to_tensor, tensor_to_pillow
@@ -1223,6 +1225,7 @@ class XYPlotRender:
                         'tooltip': "group header template. Use '{dim2_group}' for the first Cartesian-product value",
                     },
                 ),
+                'plot_header_overrides': ('PLOT_HEADER_OVERRIDES', {'tooltip': 'optional per-value header text and color overrides'}),
             },
         }
 
@@ -1257,6 +1260,7 @@ class XYPlotRender:
         plot_config_footer=None,
         group_dim2_headers=False,
         dim2_group_header_format='Prompt: {dim2_group:.60}…',
+        plot_header_overrides=None,
     ):
         if xy_plot_data.cached_cells is not None:
             first_data = _plot_data_from_dict(
@@ -1268,6 +1272,7 @@ class XYPlotRender:
                 direction,
                 group_dim2_headers,
                 dim2_group_header_format,
+                plot_header_overrides,
             )
             for cell in xy_plot_data.cached_cells:
                 cell_data = _plot_data_from_dict(cell['plot_data'])
@@ -1292,6 +1297,7 @@ class XYPlotRender:
                 direction,
                 group_dim2_headers,
                 dim2_group_header_format,
+                plot_header_overrides,
             )
 
         # add image to pager
@@ -1479,6 +1485,7 @@ class XYPlotVideoRender:
                         'tooltip': "group header template. Use '{dim2_group}' for the first Cartesian-product value",
                     },
                 ),
+                'plot_header_overrides': ('PLOT_HEADER_OVERRIDES', {'tooltip': 'optional per-value header text and color overrides'}),
             },
         }
 
@@ -1546,6 +1553,7 @@ class XYPlotVideoRender:
         plot_config_footer,
         group_dim2_headers,
         dim2_group_header_format,
+        plot_header_overrides,
     ):
         first_data = cells[0][0]
         target_frames = max(record.frames.shape[0] for _, record in cells)
@@ -1580,6 +1588,7 @@ class XYPlotVideoRender:
                 direction,
                 group_dim2_headers,
                 dim2_group_header_format,
+                plot_header_overrides,
             )
             for plot_data, record in cells:
                 if frame_index < record.frames.shape[0]:
@@ -1654,6 +1663,7 @@ class XYPlotVideoRender:
         plot_config_footer=None,
         group_dim2_headers=False,
         dim2_group_header_format='Prompt: {dim2_group:.60}…',
+        plot_header_overrides=None,
     ):
         if xy_plot_data.cached_cells is not None:
             cells = self._load_cached_cells(xy_plot_data.cached_cells, fps)
@@ -1689,6 +1699,7 @@ class XYPlotVideoRender:
             plot_config_footer,
             group_dim2_headers,
             dim2_group_header_format,
+            plot_header_overrides,
         )
         output_fps = fps if fps > 0 else cells[0][1].frame_rate
         audio = self._select_audio(cells, audio_mode, audio_cell, direction)
@@ -1698,6 +1709,37 @@ class XYPlotVideoRender:
             frame_rate=_frame_rate(output_fps),
         )
         return (_video_from_record(output_record), plot_frames)
+
+
+@register_node('Plot Config: Header Override', 'plot')
+class PlotConfigHeaderOverride:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            'required': {
+                'dimension': (['dim1', 'dim2', 'dim2 group'], {'default': 'dim1'}),
+                'match_mode': (['exact', 'contains'], {'default': 'exact'}),
+                'match_value': ('STRING', {'default': '', 'tooltip': 'match against the raw DIM value, before header formatting'}),
+                'action': (['append', 'prepend', 'replace'], {'default': 'append'}),
+                'text': ('STRING', {'default': 'OLD', 'tooltip': "display text; use '{value}' for the matched raw value"}),
+                'color': ('STRING', {'default': '#ff0000', 'tooltip': TOOLTIP_COLOR}),
+                'separator': ('STRING', {'default': ' — '}),
+                'case_sensitive': ('BOOLEAN', {'default': True}),
+            },
+            'optional': {
+                'previous': ('PLOT_HEADER_OVERRIDES', {'tooltip': 'chain another override configuration'}),
+            },
+        }
+
+    FUNCTION = 'run'
+    RETURN_TYPES = ('PLOT_HEADER_OVERRIDES',)
+    RETURN_NAMES = ('header overrides',)
+    DESCRIPTION = 'Append, prepend, or replace one matching XY plot header with independently colored text.'
+
+    def run(self, dimension, match_mode, match_value, action, text, color, separator, case_sensitive, previous=None):
+        rules = list(previous.rules) if previous else []
+        rules.append(PlotHeaderOverrideRule(dimension, match_mode, match_value, action, text, color, separator, case_sensitive))
+        return (PlotHeaderOverridesData(rules),)
 
 
 @register_node('Plot Config: Grid', 'plot')

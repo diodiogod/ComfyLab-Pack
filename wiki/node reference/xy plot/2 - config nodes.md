@@ -4,7 +4,7 @@
 
 ## Overview
 
-In addition to the standard [Queue and Render nodes](./1%20-%20queue%20and%20render.md), you can customize many visual aspects of the grid, thanks to 2 optional nodes, `Plot Config: Grid` and `Plot Config: Header/Footer`, than can be plugged into `XY Plot: Render`.\
+In addition to the standard [Queue and Render nodes](./1%20-%20queue%20and%20render.md), you can customize many visual aspects of the grid with `Plot Config: Grid`, `Plot Config: Header/Footer`, and `Plot Config: Header Override`. These can be plugged into both image and video renderers.\
 They allow you to customize the grid, and either the page header or footer (or both), all configurable separately.
 
 > [!TIP]
@@ -78,3 +78,20 @@ In addition, **you can also use the special value `transparent`**:
 |       output name       |      type      |         description          | comment                     |
 | :---------------------: | :------------: | :--------------------------: | :-------------------------- |
 | config: header / footer | PLOT_CONFIG_HF | page header or footer config | linked to `XY Plot: Render` |
+
+## Plot Config: Header Override
+
+Use this node to mark particular DIM values without changing the values used for generation or caching. It can append, prepend, or replace display text and give that text its own color.
+
+For example, to add a red `OLD` marker to one epoch:
+
+- `dimension`: `dim1`
+- `match mode`: `contains`
+- `match value`: `epoch_1`
+- `action`: `append`
+- `text`: `OLD`
+- `color`: `#ff0000`
+
+Connect `header overrides` to the matching input on `XY Plot: Render` or `XY Plot: Video Render`. Matching uses the raw DIM value before the normal header format is applied. To add more than one rule, connect one override node to the next node's `previous` input.
+
+The `text` field also accepts `{value}`, which inserts the matched raw value. The override affects only the rendered label; it does not require a Cartesian product and does not invalidate cached cells.

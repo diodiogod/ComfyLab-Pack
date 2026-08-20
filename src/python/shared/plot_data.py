@@ -53,6 +53,38 @@ class PlotConfigHFData:
 
 
 @dataclass
+class PlotHeaderSegment:
+    text: str
+    color: str | None = None
+
+
+@dataclass
+class PlotHeaderText:
+    segments: list[PlotHeaderSegment]
+
+    @property
+    def plain_text(self) -> str:
+        return ''.join(segment.text for segment in self.segments)
+
+
+@dataclass
+class PlotHeaderOverrideRule:
+    dimension: str
+    match_mode: str
+    match_value: str
+    action: str
+    text: str
+    color: str
+    separator: str = ' — '
+    case_sensitive: bool = True
+
+
+@dataclass
+class PlotHeaderOverridesData:
+    rules: list[PlotHeaderOverrideRule]
+
+
+@dataclass
 class PlotVars:
     current_page: int
     total_pages: int

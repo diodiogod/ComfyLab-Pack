@@ -4,7 +4,7 @@ import textwrap
 import math
 from dataclasses import asdict
 
-from .plot_data import PlotConfigGridData, PlotConfigHFData, PlotVars
+from .plot_data import PlotConfigGridData, PlotConfigHFData, PlotVars, PlotHeaderText, PlotHeaderSegment
 from .formatting import format_string
 
 STATIC_DIR = (Path(__file__).parent.parent.parent.parent / 'static').resolve()
@@ -229,6 +229,20 @@ class Grid:
     ) -> list[str]:
         normalized = []
         for header in headers:
+            if isinstance(header, PlotHeaderText):
+                header = PlotHeaderText([
+                    PlotHeaderSegment(segment.text.replace(r'\n', '\n'), segment.color)
+                    for segment in header.segments
+                ])
+                plain = header.plain_text
+                if wrap_mode == 'auto' and font and max_width > 0:
+                    wrapped = self._wrap_text_to_width(plain, font, max_width)
+                    header = self._restore_styled_wrap(header, wrapped)
+                elif wrap > 0:
+                    wrapped = textwrap.fill(plain, wrap, break_on_hyphens=True)
+                    header = self._restore_styled_wrap(header, wrapped)
+                normalized.append(header)
+                continue
             header = header.replace(r'\n', '\n')
             if wrap_mode == 'auto' and font and max_width > 0:
                 header = self._wrap_text_to_width(header, font, max_width)
@@ -236,6 +250,32 @@ class Grid:
                 header = textwrap.fill(header, wrap, break_on_hyphens=True)
             normalized.append(header)
         return normalized
+
+    def _plain(self, header):
+        return header.plain_text if isinstance(header, PlotHeaderText) else header
+
+    def _restore_styled_wrap(self, header, wrapped):
+        """Copy colors from the original visible characters onto wrapped text."""
+        colored = []
+        for segment in header.segments:
+            colored.extend((char, segment.color) for char in segment.text)
+        result = []
+        source = 0
+        for char in wrapped:
+            if char == '\n':
+                result.append(PlotHeaderSegment(char, None))
+                while source < len(colored) and colored[source][0].isspace():
+                    source += 1
+                continue
+            while source < len(colored) and colored[source][0] != char:
+                source += 1
+            color = colored[source][1] if source < len(colored) else None
+            source += 1
+            if result and result[-1].color == color:
+                result[-1].text += char
+            else:
+                result.append(PlotHeaderSegment(char, color))
+        return PlotHeaderText(result)
 
     def _wrap_text_to_width(
         self, text: str, font: ImageFont, max_width: float
@@ -283,7 +323,7 @@ class Grid:
         height = 0
         for header in headers:
             if header:
-                height = max(height, math.ceil(len(header.split('\n')) * font.size))
+                height = max(height, math.ceil(len(self._plain(header).split('\n')) * font.size))
         if height > 0:
             height += 2 * self.config_grid.pad_col_headers
         return height
@@ -297,6 +337,7 @@ class Grid:
 
         left_margin = 0
         for header in self.headers[1]:
+            header = self._plain(header)
             if header == '':
                 continue
             for line in header.split('\n'):
@@ -315,10 +356,31 @@ class Grid:
         font: ImageFont,
         font_color,
     ):
+        if isinstance(text, PlotHeaderText):
+            self._draw_styled_header(draw, pos, text, font, font_color)
+            return
         # see: https://github.com/python-pillow/Pillow/discussions/7914#discussioncomment-8950499
         draw.multiline_text(
             pos, text, font=font, fill=font_color, align='center', anchor='mm'
         )
+
+    def _draw_styled_header(self, draw, pos, text, font, default_color):
+        lines = [[]]
+        for segment in text.segments:
+            parts = segment.text.split('\n')
+            for index, part in enumerate(parts):
+                if part:
+                    lines[-1].append((part, segment.color or default_color))
+                if index < len(parts) - 1:
+                    lines.append([])
+        start_y = pos[1] - (len(lines) - 1) * font.size / 2
+        for line_index, line in enumerate(lines):
+            width = sum(font.getlength(part) for part, _ in line)
+            x = pos[0] - width / 2
+            y = start_y + line_index * font.size
+            for part, color in line:
+                draw.text((x, y), part, font=font, fill=color, anchor='lm')
+                x += font.getlength(part)
 
     def _add_page_hf(self, grid_image: Image.Image, plot_vars: PlotVars) -> Image.Image:
         grid_width, grid_height = grid_image.size

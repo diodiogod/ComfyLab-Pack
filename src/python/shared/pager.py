@@ -6,6 +6,9 @@ from .plot_data import (
     PlotConfigGridData,
     PlotConfigHFData,
     PlotVars,
+    PlotHeaderOverridesData,
+    PlotHeaderSegment,
+    PlotHeaderText,
 )
 from .grid import Grid
 from .formatting import format_string
@@ -19,11 +22,13 @@ class Pager:
         dim1_as_rows: bool = True,
         group_dim2_headers: bool = False,
         dim2_group_header_format: str = '{dim2_group}',
+        header_overrides: PlotHeaderOverridesData = None,
     ):
         self.dim1_as_rows = dim1_as_rows
         self.header_formats = header_formats
         self.group_dim2_headers = group_dim2_headers
         self.dim2_group_header_format = dim2_group_header_format
+        self.header_overrides = header_overrides
         self.dim1 = SimpleNamespace(
             **{'length': xy_plot_data.dim1.length, 'headers': []}
         )
@@ -64,13 +69,11 @@ class Pager:
         # store dim1 / dim2 headers if not known yet
         # TODO: catch exception and set default header?
         if xy_plot_data.dim1.index >= len(self.dim1.headers):
-            self.dim1.headers.append(
-                format_string(self.header_formats[0], dim1=xy_plot_data.dim1.value)
-            )
+            header = format_string(self.header_formats[0], dim1=xy_plot_data.dim1.value)
+            self.dim1.headers.append(self._apply_overrides('dim1', xy_plot_data.dim1.value, header))
         if xy_plot_data.dim2.index >= len(self.dim2.headers):
-            self.dim2.headers.append(
-                format_string(self.header_formats[1], dim2=xy_plot_data.dim2.value)
-            )
+            header = format_string(self.header_formats[1], dim2=xy_plot_data.dim2.value)
+            self.dim2.headers.append(self._apply_overrides('dim2', xy_plot_data.dim2.value, header))
             self.dim2.values[xy_plot_data.dim2.index] = xy_plot_data.dim2.value
 
         # store the tensor as image
@@ -119,8 +122,30 @@ class Pager:
             if groups and groups[-1][0] == group_value:
                 groups[-1][2] += 1
             else:
-                label = self.dim2_group_header_format.format(
-                    dim2_group=group_value
-                )
+                label = format_string(self.dim2_group_header_format, dim2_group=group_value)
+                label = self._apply_overrides('dim2 group', group_value, label)
                 groups.append([group_value, index, 1, label])
         return [(group[3], group[1], group[2]) for group in groups]
+
+    def _apply_overrides(self, dimension, raw_value, header):
+        if not self.header_overrides:
+            return header
+        result = PlotHeaderText([PlotHeaderSegment(str(header))])
+        raw_text = str(raw_value)
+        for rule in self.header_overrides.rules:
+            if rule.dimension != dimension:
+                continue
+            candidate = raw_text if rule.case_sensitive else raw_text.casefold()
+            expected = rule.match_value if rule.case_sensitive else rule.match_value.casefold()
+            matches = candidate == expected if rule.match_mode == 'exact' else expected in candidate
+            if not matches:
+                continue
+            text = format_string(rule.text, value=raw_value)
+            styled = PlotHeaderSegment(text, rule.color)
+            if rule.action == 'replace':
+                result.segments = [styled]
+            elif rule.action == 'prepend':
+                result.segments = [styled, PlotHeaderSegment(rule.separator)] + result.segments
+            else:
+                result.segments += [PlotHeaderSegment(rule.separator), styled]
+        return result if any(segment.color for segment in result.segments) else header
