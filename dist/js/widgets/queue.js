@@ -62,6 +62,7 @@ export function QUEUE_STATUS(node, inputName, _inputData, app) {
     let hasError = false;
     let cancellationRequested = false;
     let automaticQueueing = false;
+    let queuedThrough = 0;
     const widget = node.addWidget('button', inputName, 0, () => {
         if (hasError) {
             hasError = false;
@@ -142,13 +143,35 @@ export function QUEUE_STATUS(node, inputName, _inputData, app) {
         reset();
     };
     const originalOnExecuted = node.onExecuted;
-    const queueContinuation = async () => {
+    const queueContinuations = async (from, total) => {
         if (cancellationRequested)
             return;
+        const sourceGraph = node.graph;
+        if (!sourceGraph) {
+            throw new Error('XY Plot Queue is not attached to a workflow graph');
+        }
         automaticQueueing = true;
         try {
-            if (!cancellationRequested)
-                await app.queuePrompt(0, 1);
+            const continuations = [];
+            for (let index = from; index < total && !cancellationRequested; index++) {
+                widget.value = index;
+                const prompt = await app.graphToPrompt(sourceGraph);
+                continuations.push({
+                    index,
+                    prompt,
+                });
+                for (const graphNode of sourceGraph._nodes) {
+                    for (const graphWidget of graphNode.widgets ?? []) {
+                        graphWidget.afterQueued?.();
+                    }
+                }
+            }
+            for (const continuation of continuations) {
+                if (cancellationRequested)
+                    break;
+                await api.queuePrompt(0, continuation.prompt);
+                queuedThrough = continuation.index;
+            }
         }
         finally {
             automaticQueueing = false;
@@ -162,12 +185,15 @@ export function QUEUE_STATUS(node, inputName, _inputData, app) {
         originalOnExecuted?.call(this, message);
         if (isQueueMessage(message)) {
             const data = queueMessageToData(message);
+            if (data.index === 0)
+                queuedThrough = 0;
             if (!widget.total)
                 widget.total = data.total;
             if (data.index < data.total - 1) {
-                widget.value = data.index + 1;
-                widget.label = `Processing: ${widget.value} / ${widget.total}`;
-                void queueContinuation();
+                widget.label = `Processing: ${data.index + 1} / ${data.total}`;
+                if (queuedThrough <= data.index) {
+                    void queueContinuations(data.index + 1, data.total);
+                }
             }
             else {
                 widget.label = `Processing: ${widget.value + 1} / ${widget.total}`;
@@ -184,6 +210,8 @@ export function QUEUE_STATUS(node, inputName, _inputData, app) {
         if (cancellationRequested && widget.value < 0 && !automaticQueueing) {
             cancellationRequested = false;
         }
+        if (!automaticQueueing && widget.value >= 0)
+            reset();
         if (hasError) {
             hasError = false;
             widget.label = LABEL_READY;

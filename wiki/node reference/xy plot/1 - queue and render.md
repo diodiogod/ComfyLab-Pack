@@ -89,3 +89,13 @@ For more detailed explanations, please check the [core concepts](./0%20-%20core%
 | :---------: | :---: | :---------------------: | :--------------------------------------------- |
 |    grid     | IMAGE |    generated grid(s)    | outputs when enough images have been collected |
 |    image    | IMAGE | image received in input | individual image as received in input          |
+
+## XY Plot: Select Cell
+
+Select one original image or video from the plot by its visual position, using an Excel-style cell such as `A1`, `B2`, or `C3`. The `direction` setting must match the image or video plot renderer.
+
+Connect the individual media stream—the same IMAGE or VIDEO sent to the renderer or cache—to the selector's `image` socket. The socket retains its original name for compatibility with existing workflows.
+
+- Use `selected_image` with Preview Image or Save Image.
+- Use `selected_video` with Save Video. The selected video retains its original frames, FPS, and audio.
+- When the complete plot is available in the persistent XY cache, the selected cell can be loaded directly without regenerating the other cells.

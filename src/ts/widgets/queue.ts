@@ -107,6 +107,7 @@ export function QUEUE_STATUS(
 	let hasError = false
 	let cancellationRequested = false
 	let automaticQueueing = false
+	let queuedThrough = 0
 	const widget = node.addWidget('button', inputName, 0, () => {
 		if (hasError) {
 			hasError = false
@@ -195,11 +196,42 @@ export function QUEUE_STATUS(
 	}
 
 	const originalOnExecuted = node.onExecuted
-	const queueContinuation = async () => {
+	const queueContinuations = async (from: number, total: number) => {
 		if (cancellationRequested) return
+		const sourceGraph = node.graph
+		if (!sourceGraph) {
+			throw new Error('XY Plot Queue is not attached to a workflow graph')
+		}
 		automaticQueueing = true
 		try {
-			if (!cancellationRequested) await app.queuePrompt(0, 1)
+			// Serialize every remaining cell from this node's own graph before
+			// submitting any of them. app.queuePrompt() serializes the currently
+			// active tab, which can change while an XY plot is running.
+			const continuations = []
+			for (let index = from; index < total && !cancellationRequested; index++) {
+				widget.value = index
+				const prompt = await app.graphToPrompt(sourceGraph)
+				continuations.push({
+					index,
+					prompt,
+				})
+				// app.queuePrompt normally invokes these after serializing a job.
+				// Preserve seed increment/randomize and other widget controls while
+				// using the graph-bound low-level API instead.
+				for (const graphNode of sourceGraph._nodes) {
+					for (const graphWidget of graphNode.widgets ?? []) {
+						;(graphWidget as typeof graphWidget & {
+							afterQueued?: () => void
+						}).afterQueued?.()
+					}
+				}
+			}
+
+			for (const continuation of continuations) {
+				if (cancellationRequested) break
+				await api.queuePrompt(0, continuation.prompt)
+				queuedThrough = continuation.index
+			}
 		} finally {
 			automaticQueueing = false
 			if (cancellationRequested) await drainPendingContinuations()
@@ -212,11 +244,13 @@ export function QUEUE_STATUS(
 		originalOnExecuted?.call(this, message)
 		if (isQueueMessage(message)) {
 			const data = queueMessageToData(message as IQueueMessage)
+			if (data.index === 0) queuedThrough = 0
 			if (!widget.total) widget.total = data.total
 			if (data.index < data.total - 1) {
-				widget.value = data.index + 1
-				widget.label = `Processing: ${widget.value} / ${widget.total}`
-				void queueContinuation()
+				widget.label = `Processing: ${data.index + 1} / ${data.total}`
+				if (queuedThrough <= data.index) {
+					void queueContinuations(data.index + 1, data.total)
+				}
 			} else {
 				widget.label = `Processing: ${widget.value + 1} / ${widget.total}`
 				// wait for the execution to end before displaying the "Complete" label; note: the listener will be automatically deleted after use
@@ -240,6 +274,9 @@ export function QUEUE_STATUS(
 		if (cancellationRequested && widget.value < 0 && !automaticQueueing) {
 			cancellationRequested = false
 		}
+		// Clicking Queue while another plot is active starts a fresh plot. Its
+		// already-snapshotted continuations remain ahead of this new request.
+		if (!automaticQueueing && widget.value >= 0) reset()
 		// An already queued continuation has run beforeQueued before an error.
 		// A later user-started queue can therefore safely clear the old lock.
 		if (hasError) {

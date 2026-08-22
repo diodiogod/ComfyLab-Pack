@@ -41,6 +41,11 @@ TOOLTIP_HF_PLACEHOLDERS = (
     'the following placeholders are accepted: {current_page}, {total_pages}'
 )
 TOOLTIP_PLOT_CONFIG_GRID = 'plot configuration for the grid'
+TOOLTIP_PLOT_HEADER_OVERRIDES = (
+    'Optional display-only rules from Plot Config: Header Override.\n'
+    'Rules can mark individual DIM1, DIM2, or grouped DIM2 labels with custom text and color.\n'
+    'They do not change generation values or invalidate cached images/videos.'
+)
 _RESAMPLE_LANCZOS = getattr(getattr(Image, 'Resampling', Image), 'LANCZOS')
 
 
@@ -142,6 +147,7 @@ def _plot_data_to_dict(xy_plot_data):
         'current_page': xy_plot_data.current_page,
         'total_pages': xy_plot_data.total_pages,
         'complete': xy_plot_data.complete,
+        'plot_id': xy_plot_data.plot_id,
         'dim1': {
             'index': xy_plot_data.dim1.index,
             'length': xy_plot_data.dim1.length,
@@ -602,9 +608,18 @@ def _cached_plot_cells(prompt, queue_id, dim1, dim2):
                     index == total - 1,
                     DimData(dim1_index, len(dim1), dim1[dim1_index]),
                     DimData(dim2_index, len(dim2), dim2[dim2_index]),
+                    plot_id=_plot_run_id(dim1, dim2),
                 )
             )
-            cells.append({'cache_key': cache.key, 'plot_data': plot_data})
+            cells.append(
+                {
+                    'cache_key': cache.key,
+                    'plot_data': plot_data,
+                    'media_type': 'video'
+                    if cache_type == 'XYPlotVideoCache'
+                    else 'image',
+                }
+            )
         if len(cells) == total:
             return cells
     return None
@@ -618,7 +633,18 @@ def _plot_data_from_dict(data):
         data['complete'],
         DimData(**data['dim1']),
         DimData(**data['dim2']),
+        plot_id=data.get('plot_id', ''),
     )
+
+
+def _plot_run_id(dim1, dim2):
+    encoded = json.dumps(
+        [_canonical_runtime_value(dim1), _canonical_runtime_value(dim2)],
+        sort_keys=True,
+        separators=(',', ':'),
+        ensure_ascii=False,
+    ).encode('utf-8')
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _xy_cell_coords(cell):
@@ -787,6 +813,7 @@ class XYPlotQueue:
             complete,
             DimData(index_in_page[0], current_page_dims[0], values[0]),
             DimData(index_in_page[1], current_page_dims[1], values[1]),
+            plot_id=_plot_run_id(dim1, dim2),
         )
 
         if starting_plot and total_pages == (1, 1):
@@ -1086,12 +1113,22 @@ class XYPlotSelectCell:
         return {
             'required': {
                 'xy_plot_data': ('XY_PLOT_DATA', {'tooltip': TOOLTIP_XY_PLOT_DATA}),
-                'image': ('IMAGE', {'lazy': True}),
+                'image': (
+                    ANY_TYPE,
+                    {
+                        'lazy': True,
+                        'tooltip': 'Individual IMAGE or VIDEO generated for the current XY plot cell.\n'
+                        'Connect the same media stream that feeds the plot renderer or cache node.\n'
+                        'The socket keeps its original name and position for compatibility with existing image workflows.',
+                    },
+                ),
                 'cell': (
                     'STRING',
                     {
                         'default': 'A1',
-                        'tooltip': "Excel-style visual grid position, such as 'A1' or 'C3'",
+                        'tooltip': "Excel-style visual grid position, such as 'A1' or 'C3'.\n"
+                        'Letters select visual columns and numbers select visual rows.\n'
+                        'This is a position in the rendered plot, not an epoch number.',
                     },
                 ),
                 'direction': (
@@ -1100,17 +1137,24 @@ class XYPlotSelectCell:
                         'default': True,
                         'label_on': 'dim1 as rows',
                         'label_off': 'dim1 as cols',
-                        'tooltip': 'must match the direction selected on XY Plot: Render',
+                        'tooltip': 'Controls how DIM values map to the Excel-style cell.\n'
+                        'This must match the direction selected on XY Plot: Render or XY Plot: Video Render.',
                     },
                 ),
             },
         }
 
     FUNCTION = 'run'
-    RETURN_TYPES = ('IMAGE',)
-    RETURN_NAMES = ('selected_image',)
-    OUTPUT_TOOLTIPS = ('image at the selected visual XY plot cell',)
-    DESCRIPTION = "Select one XY plot image using an Excel-style cell such as A1 or C3. Connect the output to Preview Image or Save Image."
+    RETURN_TYPES = ('IMAGE', 'VIDEO')
+    RETURN_NAMES = ('selected_image', 'selected_video')
+    OUTPUT_TOOLTIPS = (
+        'Selected IMAGE. Connect to Preview Image or Save Image; blocked when the input cell contains VIDEO.',
+        'Selected VIDEO with its original frames, FPS, and audio. Connect to Save Video; blocked when the input cell contains IMAGE.',
+    )
+    DESCRIPTION = (
+        'Select one image or video from an XY plot using an Excel-style cell such as A1 or C3.\n'
+        'Only the matching media output is enabled. Cached video selection preserves its FPS and audio.'
+    )
 
     def _matches(self, xy_plot_data, cell, direction):
         col, row = _xy_cell_coords(cell)
@@ -1148,19 +1192,37 @@ class XYPlotSelectCell:
             for cached_cell in xy_plot_data.cached_cells:
                 cell_data = _plot_data_from_dict(cached_cell['plot_data'])
                 if self._matches(cell_data, cell, direction):
-                    selected = _XYPlotImageCache(
-                        key=cached_cell['cache_key']
-                    ).load()
+                    cache = _XYPlotImageCache(key=cached_cell['cache_key'])
+                    if cached_cell.get('media_type', 'image') == 'video':
+                        selected = cache.load_media()
+                        if selected is None:
+                            raise RuntimeError(
+                                'The selected cached XY Plot video is missing; run the plot again to rebuild it'
+                            )
+                        return (
+                            ExecutionBlocker(None),
+                            _video_from_record(selected),
+                        )
+                    selected = cache.load()
                     if selected is None:
                         raise RuntimeError(
                             'The selected cached XY Plot image is missing; run the plot again to rebuild it'
                         )
-                    return (selected,)
+                    return (selected, ExecutionBlocker(None))
             raise RuntimeError(f'XY Plot cell {cell.upper()} was not found in cache')
 
         if not self._matches(xy_plot_data, cell, direction):
-            return (ExecutionBlocker(None),)
-        return (image,)
+            return (ExecutionBlocker(None), ExecutionBlocker(None))
+        if isinstance(image, torch.Tensor):
+            return (image, ExecutionBlocker(None))
+        if image is None:
+            raise RuntimeError(
+                'XY Plot: Select Cell received no image or video for the selected cell'
+            )
+        return (
+            ExecutionBlocker(None),
+            _video_from_record(_video_record(image)),
+        )
 
 
 @register_node('XY Plot: Render', 'plot')
@@ -1225,7 +1287,10 @@ class XYPlotRender:
                         'tooltip': "group header template. Use '{dim2_group}' for the first Cartesian-product value",
                     },
                 ),
-                'plot_header_overrides': ('PLOT_HEADER_OVERRIDES', {'tooltip': 'optional per-value header text and color overrides'}),
+                'plot_header_overrides': (
+                    'PLOT_HEADER_OVERRIDES',
+                    {'tooltip': TOOLTIP_PLOT_HEADER_OVERRIDES},
+                ),
             },
         }
 
@@ -1240,6 +1305,7 @@ class XYPlotRender:
 
     # Pager object, to hold each individual images and build the grid
     pager = None
+    plot_id = None
 
     def check_lazy_status(self, xy_plot_data, image=None, **kwargs):
         if xy_plot_data.cached_cells is not None:
@@ -1290,7 +1356,16 @@ class XYPlotRender:
             )
             return (grid, image)
 
-        if xy_plot_data.index == 0 or self.pager is None:
+        plot_changed = self.pager is not None and self.plot_id != xy_plot_data.plot_id
+        if plot_changed and xy_plot_data.index != 0:
+            raise RuntimeError(
+                'XY Plot inputs changed during an active queued plot. The runs were kept separate; queue the edited plot again.'
+            )
+        if (
+            xy_plot_data.index == 0
+            or self.pager is None
+            or plot_changed
+        ):
             self.pager = Pager(
                 xy_plot_data,
                 (dim1_header_format, dim2_header_format),
@@ -1299,6 +1374,7 @@ class XYPlotRender:
                 dim2_group_header_format,
                 plot_header_overrides,
             )
+            self.plot_id = xy_plot_data.plot_id
 
         # add image to pager
         self.pager.add(xy_plot_data, image)
@@ -1369,6 +1445,7 @@ class XYPlotVideoRender:
     def __init__(self):
         self.cells = None
         self.page = None
+        self.plot_id = None
 
     @classmethod
     def INPUT_TYPES(s):
@@ -1485,7 +1562,10 @@ class XYPlotVideoRender:
                         'tooltip': "group header template. Use '{dim2_group}' for the first Cartesian-product value",
                     },
                 ),
-                'plot_header_overrides': ('PLOT_HEADER_OVERRIDES', {'tooltip': 'optional per-value header text and color overrides'}),
+                'plot_header_overrides': (
+                    'PLOT_HEADER_OVERRIDES',
+                    {'tooltip': TOOLTIP_PLOT_HEADER_OVERRIDES},
+                ),
             },
         }
 
@@ -1668,9 +1748,21 @@ class XYPlotVideoRender:
         if xy_plot_data.cached_cells is not None:
             cells = self._load_cached_cells(xy_plot_data.cached_cells, fps)
         else:
-            if xy_plot_data.index == 0 or self.cells is None:
+            plot_changed = (
+                self.cells is not None and self.plot_id != xy_plot_data.plot_id
+            )
+            if plot_changed and xy_plot_data.index != 0:
+                raise RuntimeError(
+                    'XY Plot inputs changed during an active queued plot. The runs were kept separate; queue the edited plot again.'
+                )
+            if (
+                xy_plot_data.index == 0
+                or self.cells is None
+                or plot_changed
+            ):
                 self.cells = {}
                 self.page = xy_plot_data.current_page
+                self.plot_id = xy_plot_data.plot_id
             elif self.page != xy_plot_data.current_page:
                 self.cells = {}
                 self.page = xy_plot_data.current_page
@@ -1717,24 +1809,98 @@ class PlotConfigHeaderOverride:
     def INPUT_TYPES(cls):
         return {
             'required': {
-                'dimension': (['dim1', 'dim2', 'dim2 group'], {'default': 'dim1'}),
-                'match_mode': (['exact', 'contains'], {'default': 'exact'}),
-                'match_value': ('STRING', {'default': '', 'tooltip': 'match against the raw DIM value, before header formatting'}),
-                'action': (['append', 'prepend', 'replace'], {'default': 'append'}),
-                'text': ('STRING', {'default': 'OLD', 'tooltip': "display text; use '{value}' for the matched raw value"}),
-                'color': ('STRING', {'default': '#ff0000', 'tooltip': TOOLTIP_COLOR}),
-                'separator': ('STRING', {'default': ' — '}),
-                'case_sensitive': ('BOOLEAN', {'default': True}),
+                'dimension': (
+                    ['dim1', 'dim2', 'dim2 group'],
+                    {
+                        'default': 'dim1',
+                        'tooltip': 'Choose which header tier this rule searches.\n'
+                        'dim1: labels produced from DIM1 values.\n'
+                        'dim2: labels produced from DIM2 values.\n'
+                        'dim2 group: upper grouped headers created when grouped DIM2 headers are enabled.',
+                    },
+                ),
+                'match_mode': (
+                    ['exact', 'contains'],
+                    {
+                        'default': 'exact',
+                        'tooltip': 'How match value is compared with the raw DIM value.\n'
+                        'exact: the complete value must match.\n'
+                        'contains: match value may appear anywhere in the value; useful for model paths and filenames.',
+                    },
+                ),
+                'match_value': (
+                    'STRING',
+                    {
+                        'default': '',
+                        'tooltip': 'Text to find in the raw DIM value, before its normal header format is applied.\n'
+                        "Example: 'epoch_1' can match 'C:/models/epoch_1.safetensors' when match mode is contains.",
+                    },
+                ),
+                'action': (
+                    ['append', 'prepend', 'replace'],
+                    {
+                        'default': 'append',
+                        'tooltip': 'How the colored text changes a matching header.\n'
+                        'append: place it after the normal header.\n'
+                        'prepend: place it before the normal header.\n'
+                        'replace: show only the override text.',
+                    },
+                ),
+                'text': (
+                    'STRING',
+                    {
+                        'default': 'OLD',
+                        'tooltip': "Colored text to display when this rule matches.\nUse '{value}' to insert the complete raw DIM value.\nExample: OLD",
+                    },
+                ),
+                'color': (
+                    'STRING',
+                    {
+                        'default': '#ff0000',
+                        'tooltip': 'Color used only for the override text.\n' + TOOLTIP_COLOR,
+                    },
+                ),
+                'separator': (
+                    'STRING',
+                    {
+                        'default': ' — ',
+                        'tooltip': 'Text placed between the normal header and the override text for append/prepend.\n'
+                        'Spaces are preserved. Ignored when action is replace.',
+                    },
+                ),
+                'case_sensitive': (
+                    'BOOLEAN',
+                    {
+                        'default': True,
+                        'label_on': 'case sensitive',
+                        'label_off': 'ignore case',
+                        'tooltip': "Case sensitive requires uppercase/lowercase to match exactly.\n"
+                        "Turn it off to treat 'Epoch_1' and 'epoch_1' as the same text.",
+                    },
+                ),
             },
             'optional': {
-                'previous': ('PLOT_HEADER_OVERRIDES', {'tooltip': 'chain another override configuration'}),
+                'previous': (
+                    'PLOT_HEADER_OVERRIDES',
+                    {
+                        'tooltip': 'Connect another Plot Config: Header Override to combine multiple rules.\n'
+                        'Rules are applied in chain order, allowing several epochs or header tiers to be marked.',
+                    },
+                ),
             },
         }
 
     FUNCTION = 'run'
     RETURN_TYPES = ('PLOT_HEADER_OVERRIDES',)
     RETURN_NAMES = ('header overrides',)
-    DESCRIPTION = 'Append, prepend, or replace one matching XY plot header with independently colored text.'
+    OUTPUT_TOOLTIPS = (
+        'Display-only header override rules. Connect to XY Plot: Render or XY Plot: Video Render.',
+    )
+    DESCRIPTION = (
+        'Mark selected XY plot headers with additional colored text.\n'
+        'Matching uses raw DIM values, while the change applies only to the rendered label.\n'
+        'Chain nodes through previous to create multiple rules.'
+    )
 
     def run(self, dimension, match_mode, match_value, action, text, color, separator, case_sensitive, previous=None):
         rules = list(previous.rules) if previous else []
