@@ -99,3 +99,26 @@ Connect the individual media stream—the same IMAGE or VIDEO sent to the render
 - Use `selected_image` with Preview Image or Save Image.
 - Use `selected_video` with Save Video. The selected video retains its original frames, FPS, and audio.
 - When the complete plot is available in the persistent XY cache, the selected cell can be loaded directly without regenerating the other cells.
+
+## Persistent cache and preview nodes
+
+The image and video cache fingerprints the effective generation branch for each
+DIM1/DIM2 cell. Reordering a list or removing an entry does not invalidate the
+unchanged cells.
+
+The ComfyUI core **Preview as Text** (`PreviewAny`) node is safe to use while
+inspecting values in an XY workflow. It submits only its connected `source`
+value and does not store its last displayed text as a generation input.
+
+The widely used pysssss **Show Text** (`ShowText|pysssss`) node stores its last
+displayed result in `text_0`, `text_1`, and similar widget fields. ComfyLab's XY
+cache ignores those saved display fields when the node has a live `text`
+connection, so the node can remain in the generation path without invalidating
+otherwise identical cells.
+
+> [!WARNING]
+> Other third-party inspection or preview nodes may persist their displayed
+> result as a normal prompt input. If adding one causes unchanged cells to
+> regenerate, place it on a separate inspection branch or use the core
+> **Preview as Text** node. Unknown node-specific UI state is intentionally not
+> ignored automatically because it may be a real generation input.

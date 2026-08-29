@@ -246,6 +246,19 @@ def _canonical_prompt_node(
     canonical_inputs = {}
     for key in sorted(inputs):
         if (
+            node.get('class_type') == 'ShowText|pysssss'
+            and key.startswith('text_')
+            and key[5:].isdigit()
+            and isinstance(inputs.get('text'), list)
+            and len(inputs['text']) == 2
+        ):
+            # Show Text persists its last displayed result in text_0, text_1,
+            # etc. Those widget values are UI history, not effective inputs
+            # when the node's live text socket is connected. Including them
+            # makes an XY cell miss cache merely because another cell was the
+            # last value shown in the workflow.
+            continue
+        if (
             node.get('class_type') == 'XYPlotQueue'
             and cell_values is not None
             and key in ('dim1', 'dim2')
