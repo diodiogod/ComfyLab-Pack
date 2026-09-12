@@ -95,3 +95,12 @@ For example, to add a red `OLD` marker to one epoch:
 Connect `header overrides` to the matching input on `XY Plot: Render` or `XY Plot: Video Render`. Matching uses the raw DIM value before the normal header format is applied. To add more than one rule, connect one override node to the next node's `previous` input.
 
 The `text` field also accepts `{value}`, which inserts the matched raw value. The override affects only the rendered label; it does not require a Cartesian product and does not invalidate cached cells.
+
+To color a version number in place while preserving its exact text:
+
+- `match mode`: `regex`
+- `match value`: `-v\.?\d+(?:\.\d+)?`
+- `action`: `highlight match`
+- `color`: `#ff0000`
+
+This colors matches such as `-v1.0`, `-v.1.0`, `-v.09`, or `-v12` without replacing the number or the rest of the header. The `highlight match` action searches the final formatted header directly, so it also works when the header format trims, extracts, or constructs the displayed label.

@@ -51,6 +51,66 @@ class HeaderOverrideTests(unittest.TestCase):
         self.assertEqual(result.ndim, 4)
         self.assertGreater(result.shape[1], 64)
 
+    def test_regex_highlight_preserves_and_colors_exact_match(self):
+        overrides = PlotHeaderOverridesData([
+            PlotHeaderOverrideRule(
+                'dim1',
+                'regex',
+                r'-v\.?\d+(?:\.\d+)?',
+                'highlight match',
+                '',
+                '#ff0000',
+            )
+        ])
+        data = self._data(dim1='Sweaty_Shirt-v.1.0.safetensors')
+        pager = Pager(
+            data,
+            ('{dim1.removesuffix(".safetensors")}', '{dim2}'),
+            header_overrides=overrides,
+        )
+        pager.add(data, torch.zeros((1, 16, 16, 3)))
+        header = pager.dim1.headers[0]
+        self.assertEqual(header.plain_text, 'Sweaty_Shirt-v.1.0')
+        self.assertEqual(
+            [(segment.text, segment.color) for segment in header.segments],
+            [('Sweaty_Shirt', None), ('-v.1.0', '#ff0000')],
+        )
+
+    def test_regex_highlight_searches_formatted_header_not_raw_value(self):
+        overrides = PlotHeaderOverridesData([
+            PlotHeaderOverrideRule(
+                'dim1',
+                'regex',
+                r'-v\.?\d+(?:\.\d+)?',
+                'highlight match',
+                '',
+                '#ff0000',
+            )
+        ])
+        data = self._data(dim1='raw value without a version')
+        pager = Pager(
+            data,
+            ('Male_Anatomy-v2.02', '{dim2}'),
+            header_overrides=overrides,
+        )
+        pager.add(data, torch.zeros((1, 16, 16, 3)))
+        header = pager.dim1.headers[0]
+        self.assertEqual(
+            [(segment.text, segment.color) for segment in header.segments],
+            [('Male_Anatomy', None), ('-v2.02', '#ff0000')],
+        )
+
+    def test_invalid_regex_has_friendly_error(self):
+        overrides = PlotHeaderOverridesData([
+            PlotHeaderOverrideRule(
+                'dim1', 'regex', '[', 'highlight match', '', 'red'
+            )
+        ])
+        data = self._data()
+        pager = Pager(data, ('{dim1}', '{dim2}'), header_overrides=overrides)
+        with self.assertRaisesRegex(ValueError, 'Invalid Header Override regex'):
+            pager.add(data, torch.zeros((1, 16, 16, 3)))
+
 
 if __name__ == '__main__':
     unittest.main()

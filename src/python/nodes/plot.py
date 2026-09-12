@@ -1833,12 +1833,13 @@ class PlotConfigHeaderOverride:
                     },
                 ),
                 'match_mode': (
-                    ['exact', 'contains'],
+                    ['exact', 'contains', 'regex'],
                     {
                         'default': 'exact',
                         'tooltip': 'How match value is compared with the raw DIM value.\n'
                         'exact: the complete value must match.\n'
-                        'contains: match value may appear anywhere in the value; useful for model paths and filenames.',
+                        'contains: match value may appear anywhere in the value; useful for model paths and filenames.\n'
+                        r'regex: use a regular expression, for example -v\.?\d+(?:\.\d+)? to match version numbers.',
                     },
                 ),
                 'match_value': (
@@ -1846,24 +1847,26 @@ class PlotConfigHeaderOverride:
                     {
                         'default': '',
                         'tooltip': 'Text to find in the raw DIM value, before its normal header format is applied.\n'
-                        "Example: 'epoch_1' can match 'C:/models/epoch_1.safetensors' when match mode is contains.",
+                        "Example: 'epoch_1' can match 'C:/models/epoch_1.safetensors' when match mode is contains.\n"
+                        'When action is highlight match, matching searches the final displayed header instead.',
                     },
                 ),
                 'action': (
-                    ['append', 'prepend', 'replace'],
+                    ['append', 'prepend', 'replace', 'highlight match'],
                     {
                         'default': 'append',
                         'tooltip': 'How the colored text changes a matching header.\n'
                         'append: place it after the normal header.\n'
                         'prepend: place it before the normal header.\n'
-                        'replace: show only the override text.',
+                        'replace: show only the override text.\n'
+                        'highlight match: preserve the header and color only matching text.',
                     },
                 ),
                 'text': (
                     'STRING',
                     {
                         'default': 'OLD',
-                        'tooltip': "Colored text to display when this rule matches.\nUse '{value}' to insert the complete raw DIM value.\nExample: OLD",
+                        'tooltip': "Colored text to display for append, prepend, or replace.\nUse '{value}' to insert the complete raw DIM value.\nIgnored when action is highlight match.",
                     },
                 ),
                 'color': (
@@ -1878,7 +1881,7 @@ class PlotConfigHeaderOverride:
                     {
                         'default': ' — ',
                         'tooltip': 'Text placed between the normal header and the override text for append/prepend.\n'
-                        'Spaces are preserved. Ignored when action is replace.',
+                        'Spaces are preserved. Ignored when action is replace or highlight match.',
                     },
                 ),
                 'case_sensitive': (

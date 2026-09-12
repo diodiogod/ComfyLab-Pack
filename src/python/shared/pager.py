@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+import re
 import torch  # type: ignore
 from .utils import tensor_to_pillow, pillow_to_tensor
 from .plot_data import (
@@ -135,9 +136,32 @@ class Pager:
         for rule in self.header_overrides.rules:
             if rule.dimension != dimension:
                 continue
-            candidate = raw_text if rule.case_sensitive else raw_text.casefold()
-            expected = rule.match_value if rule.case_sensitive else rule.match_value.casefold()
-            matches = candidate == expected if rule.match_mode == 'exact' else expected in candidate
+            regex = None
+            if rule.match_mode == 'regex':
+                try:
+                    regex = re.compile(
+                        rule.match_value,
+                        0 if rule.case_sensitive else re.IGNORECASE,
+                    )
+                except re.error as exc:
+                    raise ValueError(
+                        f"Invalid Header Override regex '{rule.match_value}': {exc}"
+                    ) from exc
+                matches = regex.search(raw_text) is not None
+            else:
+                candidate = raw_text if rule.case_sensitive else raw_text.casefold()
+                expected = rule.match_value if rule.case_sensitive else rule.match_value.casefold()
+                matches = (
+                    candidate == expected
+                    if rule.match_mode == 'exact'
+                    else expected in candidate
+                )
+            if rule.action == 'highlight match':
+                # Highlighting is visual, so search the final formatted header.
+                # The raw DIM value may be a tuple or may have been transformed
+                # by the header format before it reaches the plot.
+                result = self._highlight_rule_matches(result, rule, regex)
+                continue
             if not matches:
                 continue
             text = format_string(rule.text, value=raw_value)
@@ -149,3 +173,48 @@ class Pager:
             else:
                 result.segments += [PlotHeaderSegment(rule.separator), styled]
         return result if any(segment.color for segment in result.segments) else header
+
+    def _highlight_rule_matches(self, header, rule, regex=None):
+        text = header.plain_text
+        if rule.match_mode == 'regex':
+            ranges = [
+                match.span()
+                for match in regex.finditer(text)
+                if match.start() != match.end()
+            ]
+        else:
+            needle = rule.match_value
+            if not needle:
+                return header
+            searchable = text if rule.case_sensitive else text.casefold()
+            expected = needle if rule.case_sensitive else needle.casefold()
+            if rule.match_mode == 'exact':
+                if searchable != expected:
+                    return header
+                ranges = [(0, len(text))]
+            else:
+                ranges = []
+                start = 0
+                while True:
+                    index = searchable.find(expected, start)
+                    if index < 0:
+                        break
+                    ranges.append((index, index + len(needle)))
+                    start = index + len(needle)
+
+        if not ranges:
+            return header
+
+        colors = []
+        for segment in header.segments:
+            colors.extend([segment.color] * len(segment.text))
+        for start, end in ranges:
+            colors[start:end] = [rule.color] * (end - start)
+
+        segments = []
+        for char, color in zip(text, colors):
+            if segments and segments[-1].color == color:
+                segments[-1].text += char
+            else:
+                segments.append(PlotHeaderSegment(char, color))
+        return PlotHeaderText(segments)
